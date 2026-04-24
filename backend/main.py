@@ -71,7 +71,8 @@ async def lifespan(app: FastAPI):
     )
 
     db = await init_database(settings)
-    log_repo = LogRepository(db)
+    log_repo = LogRepository(settings)
+    await log_repo.initialize()
     register_sqlite_writer(log_repo)
 
     sub_repo = SubscriptionRepository(db)
@@ -197,7 +198,7 @@ async def lifespan(app: FastAPI):
             await exchange.close()
         except Exception:  # noqa: BLE001
             pass
-        log_repo.close_sync()
+        await log_repo.close()
         await shutdown_database()
         shutdown_logging()
 

@@ -44,6 +44,7 @@ class ServerConfig(BaseModel):
 
 class DatabaseConfig(BaseModel):
     path: str = "data/mm.sqlite"
+    logs_path: str = "logs/mm-logs.sqlite"
     wal_mode: bool = True
     busy_timeout_ms: int = 5000
 

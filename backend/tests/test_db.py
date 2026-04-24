@@ -25,7 +25,8 @@ async def test_schema_applied(db: Database) -> None:
         "atoms_time_heatmap", "atoms_trend_saturation",
     }
     assert expected_atoms.issubset(names), f"缺表: {expected_atoms - names}"
-    assert {"subscriptions", "logs", "schema_meta", "dashboard_snapshots"} <= names
+    assert {"subscriptions", "schema_meta", "dashboard_snapshots"} <= names
+    assert "logs" not in names, "logs 表应已迁出主库到 mm-logs.sqlite"
 
 
 async def test_pragma_wal_mode(db: Database) -> None:

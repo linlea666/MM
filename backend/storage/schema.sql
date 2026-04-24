@@ -25,20 +25,8 @@ CREATE INDEX IF NOT EXISTS idx_subscriptions_active
     ON subscriptions(active);
 
 -- 三、日志（结构化）
-CREATE TABLE IF NOT EXISTS logs (
-    id        INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts        TEXT NOT NULL,                      -- ISO 8601
-    level     TEXT NOT NULL,                      -- DEBUG/INFO/WARNING/ERROR
-    logger    TEXT NOT NULL,                      -- 模块路径
-    message   TEXT NOT NULL,
-    tags      TEXT,                               -- JSON array
-    context   TEXT,                               -- JSON object
-    traceback TEXT
-);
-
-CREATE INDEX IF NOT EXISTS idx_logs_ts     ON logs(ts);
-CREATE INDEX IF NOT EXISTS idx_logs_level  ON logs(level);
-CREATE INDEX IF NOT EXISTS idx_logs_logger ON logs(logger);
+-- 注意：logs 表已独立到 mm-logs.sqlite 文件（见 storage/schema_logs.sql），
+-- 以避免高频日志写入阻塞业务事务。本文件不再包含 logs 表定义。
 
 -- ════════════════════════════════════════════════════════════════════
 -- 四、原子表（按 ATOMS.md 5 大类组织）

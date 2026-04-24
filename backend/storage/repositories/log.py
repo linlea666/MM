@@ -1,14 +1,17 @@
-"""logs 表 CRUD + 接入 logging.SQLiteQueueHandler 的同步 writer。
+"""日志 SQLite 仓库（独立文件，与业务库物理隔离）。
 
 设计要点：
-1. 后台线程通过 ``write_payload(payload)`` 调用同步 sqlite3 写入，
-   不能用 aiosqlite（没 event loop）。
-2. asyncio API（``query`` / ``cleanup_old``）走主连接的 aiosqlite。
-3. 启动时调 ``register_sqlite_writer(repo)`` 把 writer 注入到 logging。
+1. 日志库文件单独（settings.database.logs_path，默认 logs/mm-logs.sqlite），
+   避免高频 INFO 写入阻塞业务事务。
+2. 写入链路（logging 后台线程）：独占一个同步 sqlite3.Connection，
+   走 write_payload(payload)。
+3. 查询链路（/api/logs）：独占一个 aiosqlite.Connection，走 query/count/cleanup。
+4. 启动时调 register_sqlite_writer(repo) 把 writer 注入到 logging 模块。
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import sqlite3
@@ -16,22 +19,64 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 
+import aiosqlite
+
+from backend.core.config import Settings
 from backend.core.logging import set_sqlite_writer
 from backend.core.time_utils import now_iso, parse_relative
 from backend.models import LogEntry
 
-from ..db import Database
-
 logger = logging.getLogger("storage.log")
+
+_SCHEMA_PATH = Path(__file__).resolve().parent.parent / "schema_logs.sql"
 
 
 class LogRepository:
-    def __init__(self, db: Database) -> None:
-        self._db = db
-        self._sync_path = str(db.path)
+    def __init__(self, settings: Settings) -> None:
+        self._settings = settings
+        self._path: Path = settings.resolve_path(settings.database.logs_path)
+        self._async_conn: aiosqlite.Connection | None = None
+        self._async_lock = asyncio.Lock()
         self._sync_lock = Lock()
-        # 后台线程独占的同步连接（懒初始化）
         self._sync_conn: sqlite3.Connection | None = None
+        self._initialized = False
+
+    @property
+    def path(self) -> Path:
+        return self._path
+
+    async def initialize(self) -> None:
+        """应用启动时调用一次：确保文件与 schema 存在。"""
+        if self._initialized:
+            return
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        conn = await aiosqlite.connect(str(self._path), isolation_level=None)
+        conn.row_factory = aiosqlite.Row
+        cfg = self._settings.database
+        if cfg.wal_mode:
+            await conn.execute("PRAGMA journal_mode=WAL")
+        await conn.execute(f"PRAGMA busy_timeout={cfg.busy_timeout_ms}")
+        await conn.execute("PRAGMA synchronous=NORMAL")
+        await conn.execute("PRAGMA temp_store=MEMORY")
+        if not _SCHEMA_PATH.exists():
+            raise RuntimeError(f"schema_logs.sql 不存在: {_SCHEMA_PATH}")
+        ddl = _SCHEMA_PATH.read_text(encoding="utf-8")
+        await conn.executescript(ddl)
+        self._async_conn = conn
+        self._initialized = True
+        logger.info(
+            "日志库已连接",
+            extra={"context": {"logs_path": str(self._path)}},
+        )
+
+    async def close(self) -> None:
+        if self._async_conn is not None:
+            try:
+                await self._async_conn.close()
+            finally:
+                self._async_conn = None
+        self.close_sync()
+        self._initialized = False
 
     # ─── 同步写入（给 logging 后台线程用）───
 
@@ -40,15 +85,20 @@ class LogRepository:
         try:
             with self._sync_lock:
                 if self._sync_conn is None:
-                    Path(self._sync_path).parent.mkdir(parents=True, exist_ok=True)
+                    Path(self._path).parent.mkdir(parents=True, exist_ok=True)
                     conn = sqlite3.connect(
-                        self._sync_path,
+                        str(self._path),
                         timeout=5.0,
-                        check_same_thread=False,  # 主线程也可调 close_sync()
+                        check_same_thread=False,
                     )
                     conn.execute("PRAGMA journal_mode=WAL")
-                    conn.execute("PRAGMA busy_timeout=5000")
+                    conn.execute(
+                        f"PRAGMA busy_timeout={self._settings.database.busy_timeout_ms}"
+                    )
                     conn.execute("PRAGMA synchronous=NORMAL")
+                    # 首次创建时兜底建表（主流程 initialize() 一般已建好）
+                    if _SCHEMA_PATH.exists():
+                        conn.executescript(_SCHEMA_PATH.read_text(encoding="utf-8"))
                     self._sync_conn = conn
                 conn = self._sync_conn
                 conn.execute(
@@ -106,7 +156,6 @@ class LogRepository:
             params.append(f"%{keyword}%")
         if symbol:
             sql += " AND context LIKE ?"
-            # 简单模糊匹配（避免引入 JSON1 扩展）
             params.append(f'%"symbol": "{symbol}"%')
         if from_ts:
             sql += " AND ts >= ?"
@@ -117,26 +166,67 @@ class LogRepository:
         sql += " ORDER BY id DESC LIMIT ? OFFSET ?"
         params.extend([limit, offset])
 
-        rows = await self._db.fetchall(sql, tuple(params))
+        rows = await self._fetchall(sql, tuple(params))
         return [_row_to_entry(r) for r in rows]
 
     async def count(self) -> int:
-        n = await self._db.fetch_scalar("SELECT COUNT(1) FROM logs")
-        return int(n or 0)
+        row = await self._fetchone("SELECT COUNT(1) FROM logs")
+        if row is None:
+            return 0
+        return int(row[0] or 0)
+
+    async def counts_by_level_since(self, since_iso: str) -> dict[str, int]:
+        """某时间点之后按 level 计数（给 summary API 用）。"""
+        rows = await self._fetchall(
+            "SELECT level, COUNT(1) AS c FROM logs WHERE ts >= ? GROUP BY level",
+            (since_iso,),
+        )
+        return {r["level"]: int(r["c"]) for r in rows}
+
+    async def top_loggers_since(
+        self, since_iso: str, *, top: int = 10
+    ) -> list[dict[str, Any]]:
+        """某时间点之后按 logger 计数并取 TopN（给 summary API 用）。"""
+        rows = await self._fetchall(
+            "SELECT logger, COUNT(1) AS c FROM logs WHERE ts >= ? "
+            "GROUP BY logger ORDER BY c DESC LIMIT ?",
+            (since_iso, top),
+        )
+        return [{"logger": r["logger"], "count": int(r["c"])} for r in rows]
 
     async def cleanup_older_than(self, retention: str) -> int:
         """retention 形如 '7d' / '24h'。返回删除的行数。"""
         delta = parse_relative(retention)
         cutoff_ms = int((__import__("time").time() - delta.total_seconds()) * 1000)
-        # ts 是 ISO 字符串，转 ISO 比较
         from datetime import UTC, datetime
 
         cutoff_iso = datetime.fromtimestamp(cutoff_ms / 1000, tz=UTC).isoformat()
-        cur = await self._db.execute(
-            "DELETE FROM logs WHERE ts < ?",
-            (cutoff_iso,),
-        )
-        return cur.rowcount or 0
+        await self._ensure_async_conn()
+        assert self._async_conn is not None
+        async with self._async_lock:
+            cur = await self._async_conn.execute(
+                "DELETE FROM logs WHERE ts < ?",
+                (cutoff_iso,),
+            )
+            return cur.rowcount or 0
+
+    # ─── 内部 ───
+
+    async def _ensure_async_conn(self) -> None:
+        if self._async_conn is None:
+            await self.initialize()
+
+    async def _fetchone(self, sql: str, params: tuple = ()) -> aiosqlite.Row | None:
+        await self._ensure_async_conn()
+        assert self._async_conn is not None
+        async with self._async_conn.execute(sql, params) as cur:
+            return await cur.fetchone()
+
+    async def _fetchall(self, sql: str, params: tuple = ()) -> list[aiosqlite.Row]:
+        await self._ensure_async_conn()
+        assert self._async_conn is not None
+        async with self._async_conn.execute(sql, params) as cur:
+            return list(await cur.fetchall())
 
 
 def register_sqlite_writer(repo: LogRepository) -> None:

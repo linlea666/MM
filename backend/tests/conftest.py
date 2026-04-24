@@ -31,6 +31,7 @@ def tmp_config_dir(tmp_path: Path) -> Path:
     app_yaml = dst / "app.yaml"
     cfg = yaml.safe_load(app_yaml.read_text(encoding="utf-8"))
     cfg["database"]["path"] = str(tmp_path / "data" / "mm.sqlite")
+    cfg["database"]["logs_path"] = str(tmp_path / "logs" / "mm-logs.sqlite")
     cfg["logging"]["file"]["enabled"] = True
     cfg["logging"]["file"]["path"] = str(tmp_path / "logs" / "mm.log")
     cfg["logging"]["sqlite"]["enabled"] = True

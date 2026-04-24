@@ -87,32 +87,18 @@ async def query_logs(
 async def logs_summary(request: Request) -> dict[str, Any]:
     """近 1h / 24h 级别计数 + top 10 logger。"""
     repo = _repo(request)
-    db = repo._db   # 内部字段；summary 走纯 SQL 更经济
     now = datetime.now(tz=UTC)
     t_1h = (now - timedelta(hours=1)).isoformat()
     t_24h = (now - timedelta(hours=24)).isoformat()
 
-    async def _counts_by_level(since_iso: str) -> dict[str, int]:
-        rows = await db.fetchall(
-            "SELECT level, COUNT(1) AS c FROM logs WHERE ts >= ? GROUP BY level",
-            (since_iso,),
-        )
+    def _normalize(counts: dict[str, int]) -> dict[str, int]:
         out = dict.fromkeys(LOG_LEVELS, 0)
-        for r in rows:
-            out[r["level"]] = int(r["c"])
+        out.update(counts)
         return out
 
-    async def _top_loggers(since_iso: str, top: int = 10) -> list[dict[str, Any]]:
-        rows = await db.fetchall(
-            "SELECT logger, COUNT(1) AS c FROM logs WHERE ts >= ? "
-            "GROUP BY logger ORDER BY c DESC LIMIT ?",
-            (since_iso, top),
-        )
-        return [{"logger": r["logger"], "count": int(r["c"])} for r in rows]
-
-    last_1h = await _counts_by_level(t_1h)
-    last_24h = await _counts_by_level(t_24h)
-    top = await _top_loggers(t_24h)
+    last_1h = _normalize(await repo.counts_by_level_since(t_1h))
+    last_24h = _normalize(await repo.counts_by_level_since(t_24h))
+    top = await repo.top_loggers_since(t_24h, top=10)
     total = await repo.count()
     return {
         "total": total,

@@ -12,6 +12,7 @@ server:
 
 database:
   path: data/mm.sqlite
+  logs_path: logs/mm-logs.sqlite      # 日志独立文件，避免阻塞业务事务
   wal_mode: true
   busy_timeout_ms: 5000
 

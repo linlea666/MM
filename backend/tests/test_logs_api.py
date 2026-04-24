@@ -1,12 +1,11 @@
 """Step 4.3 日志查询 API 集成测试。
 
-通过 aiosqlite 直接插测试数据（绕过 logging handler），
+通过 LogRepository.write_payload（同步）插测试数据，
 然后用 REST 查询验证各过滤/分页/聚合逻辑。
 """
 
 from __future__ import annotations
 
-import json
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -18,7 +17,6 @@ from fastapi.testclient import TestClient
 from backend.collector.subscription_mgr import SubscriptionManager
 from backend.core.config import Settings
 from backend.main import create_app
-from backend.storage.db import get_database
 
 
 @pytest_asyncio.fixture
@@ -57,8 +55,8 @@ async def api_client(
 
 
 async def _seed_logs(client: TestClient) -> None:
-    """直接往 logs 表插 6 条测试记录，覆盖多 level / logger / context。"""
-    db = get_database()
+    """向日志库插 6 条测试记录，覆盖多 level / logger / context。"""
+    log_repo = client.app.state.log_repo
     now = datetime.now(tz=UTC)
 
     rows = [
@@ -72,10 +70,15 @@ async def _seed_logs(client: TestClient) -> None:
     ]
 
     for ts, level, logger_name, msg, tags, ctx in rows:
-        await db.execute(
-            "INSERT INTO logs(ts, level, logger, message, tags, context, traceback) "
-            "VALUES (?, ?, ?, ?, ?, ?, NULL)",
-            (ts, level, logger_name, msg, json.dumps(tags), json.dumps(ctx)),
+        log_repo.write_payload(
+            {
+                "ts": ts,
+                "level": level,
+                "logger": logger_name,
+                "message": msg,
+                "tags": tags,
+                "context": ctx,
+            }
         )
 
 
