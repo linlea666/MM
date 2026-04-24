@@ -46,23 +46,46 @@ export default {
           foreground: "hsl(var(--card-foreground))",
         },
         // 业务语义色
-        bullish: "hsl(142 72% 45%)",
-        bearish: "hsl(0 72% 55%)",
+        bullish: "hsl(140 72% 55%)",
+        bearish: "hsl(338 82% 58%)",
         warning: "hsl(38 92% 58%)",
+        // 霓虹高亮
+        neon: {
+          cyan: "hsl(var(--neon-cyan))",
+          magenta: "hsl(var(--neon-magenta))",
+          lime: "hsl(var(--neon-lime))",
+          amber: "hsl(var(--neon-amber))",
+          gold: "hsl(var(--neon-gold))",
+        },
       },
       borderRadius: {
         lg: "var(--radius)",
         md: "calc(var(--radius) - 2px)",
         sm: "calc(var(--radius) - 4px)",
       },
+      boxShadow: {
+        "glow-cyan": "var(--glow-cyan)",
+        "glow-magenta": "var(--glow-magenta)",
+        "glow-lime": "var(--glow-lime)",
+      },
       keyframes: {
         "pulse-soft": {
           "0%, 100%": { opacity: "1" },
           "50%": { opacity: "0.6" },
         },
+        "flash-up": {
+          "0%": { backgroundColor: "hsl(var(--neon-lime) / 0.25)" },
+          "100%": { backgroundColor: "transparent" },
+        },
+        "flash-down": {
+          "0%": { backgroundColor: "hsl(var(--neon-magenta) / 0.25)" },
+          "100%": { backgroundColor: "transparent" },
+        },
       },
       animation: {
         "pulse-soft": "pulse-soft 2s cubic-bezier(0.4, 0, 0.6, 1) infinite",
+        "flash-up": "flash-up 0.8s ease-out",
+        "flash-down": "flash-down 0.8s ease-out",
       },
     },
   },

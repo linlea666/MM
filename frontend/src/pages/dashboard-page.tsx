@@ -1,25 +1,31 @@
+import { useState } from "react";
 import { useSymbolStore } from "@/stores/symbol-store";
 import { useDashboardStream } from "@/hooks/use-dashboard-stream";
-import { HeroStrip } from "@/components/dashboard/hero-strip";
-import { MainForceRadar } from "@/components/dashboard/main-force-radar";
-import { PhaseStateCard } from "@/components/dashboard/phase-state";
-import { ParticipationCard } from "@/components/dashboard/participation-gate";
-import { KeyLevelsLadder } from "@/components/dashboard/key-levels-ladder";
-import { LiquidityCompassCard } from "@/components/dashboard/liquidity-compass";
-import { TradePlansCard } from "@/components/dashboard/trade-plans";
+import { useLivePrice } from "@/hooks/use-live-price";
+import { HeroVerdict } from "@/components/dashboard/hero-verdict";
+import { KeySpaceMap } from "@/components/dashboard/key-space-map";
+import { KeyLevelsTabs } from "@/components/dashboard/key-levels-tabs";
+import { ActionTriggers } from "@/components/dashboard/action-triggers";
+import {
+  MainForceCompact,
+  PhaseCompact,
+  LiquidityCompact,
+} from "@/components/dashboard/compact-cards";
 import { TimelineCard } from "@/components/dashboard/timeline-card";
-import { CapabilityScoresCard } from "@/components/dashboard/capability-scores-card";
+import { CapabilityScoresInline } from "@/components/dashboard/capability-scores-inline";
 import { DashboardSkeleton } from "@/components/dashboard/dashboard-skeleton";
 import { DashboardError } from "@/components/dashboard/dashboard-error";
 import { ConnectionIndicator } from "@/components/dashboard/connection-indicator";
 import { Badge } from "@/components/ui/badge";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, ChevronDown, ChevronUp } from "lucide-react";
 
 export default function DashboardPage() {
   const symbol = useSymbolStore((s) => s.symbol);
   const tf = useSymbolStore((s) => s.tf);
 
   const stream = useDashboardStream(symbol, tf);
+  const live = useLivePrice(symbol);
+  const [capExpanded, setCapExpanded] = useState(false);
 
   if (stream.isLoading && !stream.data) {
     return <DashboardSkeleton />;
@@ -40,9 +46,10 @@ export default function DashboardPage() {
 
   return (
     <div className="grid gap-4">
-      <HeroStrip snap={snap} />
+      {/* 行 1：结论带（实时价 + 一句话结论 + 策略建议） */}
+      <HeroVerdict snap={snap} />
 
-      {/* Health 提示 */}
+      {/* 数据不新鲜提醒 */}
       {!snap.health.fresh && (
         <Badge variant="warning" className="gap-1.5 px-3 py-1">
           <AlertTriangle className="h-3.5 w-3.5" />
@@ -50,7 +57,7 @@ export default function DashboardPage() {
           {snap.health.stale_seconds !== null &&
             snap.health.stale_seconds !== undefined && (
               <>
-                （滞后 <span className="font-mono num">{snap.health.stale_seconds}s</span>）
+                （滞后 <span className="num">{snap.health.stale_seconds}s</span>）
               </>
             )}
           {snap.health.warnings.length > 0 && (
@@ -61,41 +68,65 @@ export default function DashboardPage() {
         </Badge>
       )}
 
-      {/* 第二行：雷达(6) / 阶段(3) / 参与(3) */}
+      {/* 行 2：决策三驾马车 —— 空间图 + 关键位明细 + 触发条件 */}
       <div className="grid gap-4 lg:grid-cols-12">
-        <div className="lg:col-span-6">
-          <MainForceRadar behavior={snap.behavior} />
+        <div className="lg:col-span-4">
+          <KeySpaceMap ladder={snap.levels} livePrice={live.price} />
+        </div>
+        <div className="lg:col-span-5">
+          <KeyLevelsTabs ladder={snap.levels} livePrice={live.price} />
         </div>
         <div className="lg:col-span-3">
-          <PhaseStateCard phase={snap.phase} />
-        </div>
-        <div className="lg:col-span-3">
-          <ParticipationCard gate={snap.participation} />
+          <ActionTriggers snap={snap} />
         </div>
       </div>
 
-      {/* 第三行：关键位(6) / 流动性(6) */}
+      {/* 行 3：三张浓缩卡（说人话） */}
       <div className="grid gap-4 lg:grid-cols-12">
-        <div className="lg:col-span-6">
-          <KeyLevelsLadder ladder={snap.levels} />
-        </div>
-        <div className="lg:col-span-6">
-          <LiquidityCompassCard liquidity={snap.liquidity} />
-        </div>
-      </div>
-
-      {/* 第四行：计划(8) / Timeline(4) */}
-      <div className="grid gap-4 lg:grid-cols-12">
-        <div className="lg:col-span-8">
-          <TradePlansCard plans={snap.plans} />
+        <div className="lg:col-span-4">
+          <MainForceCompact
+            behavior={snap.behavior}
+            participation={snap.participation}
+          />
         </div>
         <div className="lg:col-span-4">
-          <TimelineCard events={snap.recent_events} />
+          <PhaseCompact phase={snap.phase} />
+        </div>
+        <div className="lg:col-span-4">
+          <LiquidityCompact liquidity={snap.liquidity} />
         </div>
       </div>
 
-      {/* 第五行：能力评分 */}
-      <CapabilityScoresCard scores={snap.capability_scores} />
+      {/* 行 4：近期异动（全宽） */}
+      <TimelineCard events={snap.recent_events} />
+
+      {/* 行 5：六大能力评分（默认折叠） */}
+      <div className="panel-glass rounded-lg">
+        <button
+          type="button"
+          onClick={() => setCapExpanded((v) => !v)}
+          className="flex w-full items-center justify-between px-4 py-3 text-left transition-colors hover:bg-white/5"
+        >
+          <div>
+            <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+              深度数据
+            </div>
+            <div className="mt-0.5 text-sm font-semibold">
+              六大能力评分（调参/复盘用）
+            </div>
+          </div>
+          {capExpanded ? (
+            <ChevronUp className="h-4 w-4 text-muted-foreground" />
+          ) : (
+            <ChevronDown className="h-4 w-4 text-muted-foreground" />
+          )}
+        </button>
+        {capExpanded && (
+          <div className="border-t border-border/30 p-4">
+            <CapabilityScoresInline scores={snap.capability_scores} />
+          </div>
+        )}
+      </div>
 
       {/* 底部连接/刷新状态 */}
       <ConnectionIndicator
