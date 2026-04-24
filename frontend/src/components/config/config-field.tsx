@@ -1,4 +1,13 @@
-import { AlertTriangle, HelpCircle, RotateCcw } from "lucide-react";
+import { useState } from "react";
+import {
+  AlertTriangle,
+  Check,
+  Copy,
+  Eye,
+  EyeOff,
+  HelpCircle,
+  RotateCcw,
+} from "lucide-react";
 
 import type { ConfigItemMeta, ConfigValue } from "@/lib/types";
 import { formatForDisplay } from "@/lib/config-utils";
@@ -79,6 +88,7 @@ export function ConfigField({
           )}
         </div>
         <div className="flex items-center gap-1">
+          <CopyPathButton keyPath={keyPath} />
           {isOverridden && onReset && (
             <Button
               size="sm"
@@ -101,7 +111,12 @@ export function ConfigField({
 
       {/* 辅助信息 */}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
-        <span className="font-mono">{keyPath}</span>
+        <span
+          className="font-mono opacity-70 hover:opacity-100"
+          title={keyPath}
+        >
+          {keyPath}
+        </span>
         <span>·</span>
         <span>
           默认 <span className="text-foreground/70">{formatForDisplay(defaultValue, meta)}</span>
@@ -114,6 +129,54 @@ export function ConfigField({
         )}
       </div>
     </div>
+  );
+}
+
+/**
+ * V1.1 · Phase 5：复制 dot-path 到剪贴板；方便用户对照后端文档或 API 使用。
+ * 成功后 2s 内图标变 Check，2s 后复位。降级：剪贴板不可用时静默失败。
+ */
+function CopyPathButton({ keyPath }: { keyPath: string }) {
+  const [copied, setCopied] = useState(false);
+
+  const handle = async () => {
+    try {
+      await navigator.clipboard.writeText(keyPath);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1800);
+    } catch {
+      // 旧浏览器 / 非 HTTPS 环境：回退到执行 selection+copy
+      const ta = document.createElement("textarea");
+      ta.value = keyPath;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        document.execCommand("copy");
+        setCopied(true);
+        window.setTimeout(() => setCopied(false), 1800);
+      } catch {
+        // 放弃；不打断交互
+      }
+      document.body.removeChild(ta);
+    }
+  };
+
+  return (
+    <Button
+      size="sm"
+      variant="ghost"
+      className="h-6 w-6 p-0"
+      onClick={handle}
+      title={copied ? "已复制" : `复制路径 ${keyPath}`}
+    >
+      {copied ? (
+        <Check className="h-3.5 w-3.5 text-bullish" />
+      ) : (
+        <Copy className="h-3.5 w-3.5" />
+      )}
+    </Button>
   );
 }
 
@@ -237,6 +300,34 @@ function Control({
     );
   }
 
+  // V1.1 · Phase 9 · string + format:secret → password 输入 + mask 占位
+  if (t === "string" && meta.format === "secret") {
+    return <SecretControl meta={meta} value={value} onChange={onChange} />;
+  }
+
+  // V1.1 · string + format:color → <input type="color"> + 十六进制文本
+  if (t === "string" && meta.format === "color") {
+    const hex = String(value ?? "#000000");
+    const safeHex = /^#([0-9a-fA-F]{6}|[0-9a-fA-F]{3})$/.test(hex) ? hex : "#000000";
+    return (
+      <div className="flex items-center gap-2">
+        <input
+          type="color"
+          className="h-8 w-10 cursor-pointer rounded border border-border/40 bg-transparent p-0"
+          value={safeHex}
+          onChange={(e) => onChange(e.target.value.toUpperCase())}
+          aria-label={meta.label}
+        />
+        <Input
+          className="h-8 w-28 font-mono text-xs"
+          value={hex}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder="#16D9E3"
+        />
+      </div>
+    );
+  }
+
   // string fallback
   return (
     <Input
@@ -246,6 +337,65 @@ function Control({
     />
   );
 }
+
+// ─── V1.1 · Phase 9 · Secret（密钥）输入 ──────────────
+//
+// 运行值是 mask 形态（如 "sk-****abcd"），不能直接当输入框 value：
+// - 用户未操作时，输入框保持空白（placeholder 显示 mask 提示"已保存"）；
+// - 用户开始输入，onChange 派发新值 → 外层 setDirty；
+// - 若用户把输入清空，派发 ""，表示删除该字段（通过 PATCH 完成后 reset 可再写）；
+// - 显隐切换只改 <input type>，不透传任何明文到 props。
+
+function SecretControl({
+  meta,
+  value,
+  onChange,
+}: {
+  meta: ConfigItemMeta;
+  value: ConfigValue;
+  onChange: (v: ConfigValue) => void;
+}) {
+  const mask = typeof value === "string" ? value : "";
+  const hasStored = mask.length > 0;
+  const [local, setLocal] = useState("");
+  const [revealed, setRevealed] = useState(false);
+  const touched = local.length > 0;
+
+  return (
+    <div className="flex items-center gap-2">
+      <Input
+        className="h-8 w-full font-mono text-xs"
+        type={revealed ? "text" : "password"}
+        value={local}
+        placeholder={hasStored ? `已保存 ${mask}（输入新值覆盖）` : "sk-…"}
+        onChange={(e) => {
+          const next = e.target.value;
+          setLocal(next);
+          onChange(next);
+        }}
+        autoComplete="off"
+        spellCheck={false}
+        aria-label={meta.label}
+      />
+      <Button
+        type="button"
+        size="sm"
+        variant="ghost"
+        className="h-8 w-8 p-0"
+        onClick={() => setRevealed((v) => !v)}
+        title={revealed ? "隐藏" : "显示"}
+        disabled={!touched}
+      >
+        {revealed ? (
+          <EyeOff className="h-3.5 w-3.5" />
+        ) : (
+          <Eye className="h-3.5 w-3.5" />
+        )}
+      </Button>
+    </div>
+  );
+}
+
 
 // ─── 数字滑条（percent / weight 用） ──────────────────
 

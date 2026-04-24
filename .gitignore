@@ -66,3 +66,7 @@ deploy/logs/
 # ─────────── Tmp ───────────
 /tmp/
 *.tmp
+
+# ─────────── E2E replay fixtures ───────────
+# 只在本地抓取，不进 git（尺寸大、且随时可用 scripts/capture_hfd_snapshot.py 重生成）
+/backend/tests/fixtures/upstream/

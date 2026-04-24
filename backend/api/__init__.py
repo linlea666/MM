@@ -8,6 +8,7 @@
 所有错误通过 ``MMError`` 体系翻译为 HTTP 状态码，无鉴权（V1 内网部署）。
 """
 
+from .ai_router import router as ai_router
 from .config_router import router as config_router
 from .dashboard import router as dashboard_router
 from .logs_router import router as logs_router
@@ -16,6 +17,7 @@ from .system import router as system_router
 from .ws_routes import router as ws_router
 
 __all__ = [
+    "ai_router",
     "config_router",
     "dashboard_router",
     "logs_router",

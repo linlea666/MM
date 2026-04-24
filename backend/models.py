@@ -20,6 +20,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+# ai.schemas 不反向依赖 backend.models，引入安全（避免 TYPE_CHECKING 带来的 model_rebuild 负担）
+from backend.ai.schemas import AIObserverSummary
+
 # ════════════════════════════════════════════════════════
 # 一、基础类型
 # ════════════════════════════════════════════════════════
@@ -207,24 +210,32 @@ class PowerImbalancePoint(_StrictBase):
 
 
 class TrendExhaustionPoint(_StrictBase):
-    """1.9 能量耗竭。0 = 无耗竭。"""
+    """1.9 能量耗竭。0 = 无耗竭。
+
+    上游字段为 ``number``（docs/upstream-api/endpoints/trend_exhaustion.md），
+    小数段（如 5.5 / 7.2 / 8.5）才是常见区间；用 ``int`` 会把小数值整行丢弃。
+    """
 
     symbol: str
     tf: str
     ts: int
-    exhaustion: int
+    exhaustion: float
     type: SegmentType
 
 
 # ── 段式区间类（5 个）──
 
 class SmartMoneySegment(_StrictBase):
-    """2.1 主力成本段。"""
+    """2.1 主力成本段。
+
+    ``end_time`` 在 Ongoing 段里可能为 None（上游可能省略/返回 null），
+    解析层会尽量回退到 anchor_ts；但保留 Optional 以兼容极端情况。
+    """
 
     symbol: str
     tf: str
     start_time: int
-    end_time: int  # Ongoing 时跟随最新 K 线
+    end_time: int | None = None  # Ongoing 时跟随最新 K 线；上游缺失则为 None
     avg_price: float
     type: SegmentType
     status: SegmentStatus
@@ -393,6 +404,151 @@ class TrendSaturationStat(_StrictBase):
 
 
 # ════════════════════════════════════════════════════════
+# 二-B、V1.1 扩展原子（7 个，与 V1 架构正交）
+# 独立表 / 独立 parser / 独立语义，复用 V1 基础设施但不污染核心 5 类。
+# ════════════════════════════════════════════════════════
+
+# ── 事件扩展（1 个）──
+
+class ChochEvent(_StrictBase):
+    """6.1 机构破坏/突破事件（inst_choch）。
+
+    上游 ``type`` 含 4 种：
+    - ``CHoCH_Bullish`` / ``CHoCH_Bearish`` —— 结构反转（Change of Character）
+    - ``BOS_Bullish``  / ``BOS_Bearish``  —— 结构延续（Break of Structure）
+
+    ``level_price`` 是刚被真金白银砸穿的前高/前低；``origin_ts`` 是该水平的形成时间。
+    """
+
+    symbol: str
+    tf: str
+    ts: int                    # 事件触发时间（timestamp）
+    price: float               # 事件触发价
+    level_price: float         # 被突破的前高/前低
+    origin_ts: int             # 该前高/前低的形成时间（保留溯源）
+    type: Literal[
+        "CHoCH_Bullish", "CHoCH_Bearish",
+        "BOS_Bullish", "BOS_Bearish",
+    ]
+
+
+# ── 波段四维（4 个，共享 (symbol, tf, start_time, type) 可 JOIN 成波段画像）──
+
+class RoiSegment(_StrictBase):
+    """6.2 未来收益预期（trend_roi_exhaustion）。
+
+    历史大数据给出波段的"平均目标价"（粗虚线）和"极限目标价"（亮实线）。
+    """
+
+    symbol: str
+    tf: str
+    start_time: int
+    end_time: int              # 官方段式总返回值
+    avg_price: float           # 波段平均价（锚）
+    limit_avg_price: float     # 平均目标价（粗虚线）
+    limit_max_price: float     # 极限目标价（亮色实线）
+    type: SegmentType
+    status: SegmentStatus
+
+
+class PainDrawdownSegment(_StrictBase):
+    """6.3 极限洗盘深度（max_pain_drawdown）。
+
+    主力允许的最大反向插针空间：半透明带（avg）+ 实线边界（max）。
+    """
+
+    symbol: str
+    tf: str
+    start_time: int
+    end_time: int
+    avg_price: float
+    pain_avg_price: float      # 半透明色带（洗盘容忍区）
+    pain_max_price: float      # 实线极限防线
+    type: SegmentType
+    status: SegmentStatus
+
+
+class TimeWindowSegment(_StrictBase):
+    """6.4 趋势时间极限（time_exhaustion_window）。
+
+    给行情画"中年期虚线"和"死亡线实线"两条时间轴。
+    ``limit_avg_time`` / ``limit_max_time`` 都是 ms epoch（时间点，不是时长）。
+    """
+
+    symbol: str
+    tf: str
+    start_time: int
+    end_time: int
+    last_update_time: int      # 最近一次数据更新时间（反映活性）
+    avg_price: float
+    limit_avg_time: int        # 平均寿命虚线（ms epoch）
+    limit_max_time: int        # 极限寿命实线（ms epoch）
+    type: SegmentType
+    status: SegmentStatus
+
+
+class DdToleranceSegment(_StrictBase):
+    """6.5 涨跌极限 / 移动护城河（max_drawdown_tolerance）。
+
+    - ``trailing_line`` 是一条阶梯式移动防线：``list[[ts, price]]``
+    - ``pierces`` 是历史刺穿点：``list[[ts, price]]``（可能为空）
+    - ``limit_pct`` 是该波段允许的回撤百分比
+    - 主键用官方 ``id`` 以区分同一 (symbol, tf) 下的多个段
+    """
+
+    symbol: str
+    tf: str
+    id: int                    # 官方返回的段 ID（如 5924）
+    start_time: int
+    end_time: int
+    limit_pct: float
+    status: SegmentStatus
+    trailing_line: list[list[float]] = Field(default_factory=list)
+    pierces: list[list[float]] = Field(default_factory=list)
+
+
+# ── 价位带扩展（2 个，字段同构但语义各异）──
+
+class CascadeBand(_StrictBase):
+    """6.6 连环爆仓区（cascade_liquidation）。
+
+    官方 💣 带：大资金连环爆仓的"火药桶"。
+    - ``type == Accumulation``：下方多头爆仓带（价格下穿时引爆多头）
+    - ``type == Distribution``：上方空头爆仓带（价格上穿时引爆空头）
+    - ``signal_count`` 相当于 "💣 强度标签"，数字越大威力越强
+    """
+
+    symbol: str
+    tf: str
+    start_time: int
+    bottom_price: float
+    top_price: float
+    avg_price: float
+    volume: float              # 积压资金量（5.0M 的那个数字）
+    signal_count: int          # 强度标签
+    type: SegmentType
+
+
+class RetailStopBand(_StrictBase):
+    """6.7 散户止损点（retail_stop_loss）。
+
+    散户止损/爆仓单密集区：
+    - ``type == Accumulation``：下方多头止损带（做多散户的卖单/爆仓）
+    - ``type == Distribution``：上方空头止损带（做空散户的买单/爆仓）
+    - ``volume`` 越大表示"肥肉"越多（颜色越深）
+    """
+
+    symbol: str
+    tf: str
+    start_time: int
+    bottom_price: float
+    top_price: float
+    avg_price: float
+    volume: float              # 散户止损密度（颜色深浅）
+    type: SegmentType
+
+
+# ════════════════════════════════════════════════════════
 # 三、能力 / 模块输出（规则引擎中间结构）
 # 详见 docs/dashboard-v1/INDICATOR-COMBINATIONS.md
 # ════════════════════════════════════════════════════════
@@ -453,7 +609,11 @@ class Level(_StrictBase):
 
 
 class LevelLadder(_StrictBase):
-    """模块 ⑤ 关键位阶梯（上 3 + 当前价 + 下 3）。"""
+    """模块 ⑤ 关键位阶梯（上 3 + 当前价 + 下 3）。
+
+    V1.1 · 新增 ``far_above / far_below``：超出 R3/S3 之外的"远距候选"
+    （由 ``key_levels.far_range_pct_min/max`` 控制），按距当前价由近→远排序。
+    """
 
     r3: Level | None = None
     r2: Level | None = None
@@ -462,6 +622,10 @@ class LevelLadder(_StrictBase):
     s1: Level | None = None
     s2: Level | None = None
     s3: Level | None = None
+
+    # V1.1 · 远距列表（可配数量 ``key_levels.max_far_count``）
+    far_above: list[Level] = Field(default_factory=list)
+    far_below: list[Level] = Field(default_factory=list)
 
 
 class LiquidityTarget(_StrictBase):
@@ -555,6 +719,93 @@ class HeroStrip(_StrictBase):
     invalidation: str
 
 
+# ── V1.1 · 数字化白话卡（把 features.view 直出给前端大屏）──
+
+class ChochCard(_StrictBase):
+    """⚡ 机构破坏/突破事件卡（对应官方 inst_choch）。
+
+    原料：``FeatureSnapshot.choch_latest``（仅取最新事件；recent 列表在前端折叠区展开）。
+    """
+
+    ts: int
+    price: float
+    level_price: float
+    type: str                   # CHoCH_Bullish / CHoCH_Bearish / BOS_Bullish / BOS_Bearish
+    kind: Literal["CHoCH", "BOS"]
+    direction: Literal["bullish", "bearish"]
+    distance_pct: float         # (level_price - last_price) / last_price（带正负）
+    bars_since: int             # 距当前 anchor 几根 K 线
+    hint: str                   # 白话口诀（"⚡ 破 93,800 · 3 根前"）
+
+
+class BandCard(_StrictBase):
+    """💣 爆仓带 / 散户止损带 单条卡。
+
+    原料：``FeatureSnapshot.cascade_bands`` / ``retail_stop_bands``。
+    前端按 ``side`` 分两列显示（多头燃料 / 空头燃料）。
+    """
+
+    start_time: int
+    avg_price: float
+    top_price: float
+    bottom_price: float
+    side: Literal["long_fuel", "short_fuel"]
+    type: str                   # 原始 Accumulation / Distribution
+    above_price: bool
+    distance_pct: float
+    intensity: float            # 0~1，与 liquidity_map 同口径（便于 AI 理解）
+    strength_label: str         # "5.0M 💣" / "1.2M" 等人类可读
+    signal_count: int | None = None   # cascade 专有（💣 炸弹数字）
+
+
+class SegmentCard(_StrictBase):
+    """波段四维综合卡（ROI / Pain / Time / DdTolerance）。
+
+    原料：``FeatureSnapshot.segment_portrait``。
+    任一维度缺失该字段为 None，``sources`` 声明当前可用维度。
+    """
+
+    type: str | None = None              # Accumulation / Distribution
+    status: str | None = None            # Ongoing / Ended
+
+    # ROI
+    roi_avg_price: float | None = None
+    roi_limit_avg_price: float | None = None
+    roi_limit_max_price: float | None = None
+
+    # Pain
+    pain_avg_price: float | None = None
+    pain_max_price: float | None = None
+
+    # Time
+    bars_to_avg: int | None = None
+    bars_to_max: int | None = None
+    time_avg_ts: int | None = None
+    time_max_ts: int | None = None
+
+    # DdTolerance
+    dd_trailing_current: float | None = None
+    dd_limit_pct: float | None = None
+    dd_pierce_count: int = 0
+
+    sources: list[Literal["roi", "pain", "time", "dd_tolerance"]] = Field(
+        default_factory=list
+    )
+    hint: str = ""      # 白话口诀（"🎯 T1 96,500 · T2 99,800 | 🛡️ 护城河 92,400"）
+
+
+class DashboardCards(_StrictBase):
+    """V1.1 · 数字化白话卡聚合（All in One，注入 DashboardSnapshot.cards）。"""
+
+    choch_latest: ChochCard | None = None
+    choch_recent: list[ChochCard] = Field(default_factory=list)
+    cascade_long_fuel: list[BandCard] = Field(default_factory=list)
+    cascade_short_fuel: list[BandCard] = Field(default_factory=list)
+    retail_long_fuel: list[BandCard] = Field(default_factory=list)
+    retail_short_fuel: list[BandCard] = Field(default_factory=list)
+    segment: SegmentCard | None = None
+
+
 # ── 时间线异动 ──
 
 class TimelineEvent(_StrictBase):
@@ -603,11 +854,17 @@ class DashboardSnapshot(_StrictBase):
 
     plans: list[TradingPlan] = Field(default_factory=list)  # A/B/C
 
-    ai_observations: list[AIObservation] = Field(default_factory=list)  # D（V1.1）
+    ai_observations: list[AIObservation] = Field(default_factory=list)  # D（V1.1 旧占位）
 
     capability_scores: list[CapabilityScore] = Field(default_factory=list)
     recent_events: list[TimelineEvent] = Field(default_factory=list)
     health: DashboardHealth
+
+    # V1.1 · 数字化白话卡（直出，方便前端大屏与 AI 观察理解）
+    cards: DashboardCards | None = None
+
+    # V1.1 · Phase 9 · AI 观察摘要（最新一条，由 AIObserver 产出；未启用时为 None）
+    ai: AIObserverSummary | None = None
 
 
 # ════════════════════════════════════════════════════════
@@ -660,17 +917,23 @@ __all__ = [
     "AIObservation",
     "AIObserverOutput",
     "AbsoluteZone",
+    "BandCard",
     "BehaviorAlert",
     "BehaviorAlertType",
     "BehaviorMain",
     "BehaviorScore",
     "BreakoutKind",
     "CapabilityScore",
+    "CascadeBand",
+    "ChochCard",
+    "ChochEvent",
     "CvdPoint",
+    "DashboardCards",
     "DashboardHealth",
     "DashboardSnapshot",
     "DataSourceHealth",
     "DataSourceStatus",
+    "DdToleranceSegment",
     "Direction",
     "HeatmapBand",
     "HeroStrip",
@@ -691,6 +954,7 @@ __all__ = [
     "MagnetSide",
     "MicroPocSegment",
     "OrderBlock",
+    "PainDrawdownSegment",
     "ParticipationGate",
     "ParticipationLevel",
     "PhaseLabel",
@@ -699,6 +963,9 @@ __all__ = [
     "PositionSize",
     "PowerImbalancePoint",
     "ResonanceEvent",
+    "RetailStopBand",
+    "RoiSegment",
+    "SegmentCard",
     "SegmentStatus",
     "SegmentType",
     "SmartMoneySegment",
@@ -706,6 +973,7 @@ __all__ = [
     "SubscriptionStatus",
     "SystemHealth",
     "TimeHeatmapHour",
+    "TimeWindowSegment",
     "TimelineEvent",
     "TradeAction",
     "TradingPlan",

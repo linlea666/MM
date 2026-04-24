@@ -15,7 +15,10 @@ from typing import Any
 
 from backend.models import (
     AbsoluteZone,
+    CascadeBand,
+    ChochEvent,
     CvdPoint,
+    DdToleranceSegment,
     HeatmapBand,
     HvnNode,
     ImbalancePoint,
@@ -24,11 +27,15 @@ from backend.models import (
     LiquiditySweepEvent,
     MicroPocSegment,
     OrderBlock,
+    PainDrawdownSegment,
     PocShiftPoint,
     PowerImbalancePoint,
     ResonanceEvent,
+    RetailStopBand,
+    RoiSegment,
     SmartMoneySegment,
     TimeHeatmapHour,
+    TimeWindowSegment,
     TrailingVwapPoint,
     TrendExhaustionPoint,
     TrendPuritySegment,
@@ -227,11 +234,102 @@ class TrendSaturationRepository(AtomRepository[TrendSaturationStat]):
     )
 
 
+# ════════════════ V1.1 扩展（7 个） ════════════════
+
+
+class ChochEventRepository(AtomRepository[ChochEvent]):
+    """机构 CHoCH/BOS 事件。主键含 level_price 以避免同一 ts 多事件冲突。"""
+
+    TABLE = "atoms_choch_events"
+    MODEL = ChochEvent
+    PRIMARY = ("symbol", "tf", "ts", "type", "level_price")
+    COLUMNS = ("symbol", "tf", "ts", "price", "level_price", "origin_ts", "type")
+
+
+class RoiSegmentRepository(AtomRepository[RoiSegment]):
+    TABLE = "atoms_roi_segments"
+    MODEL = RoiSegment
+    PRIMARY = ("symbol", "tf", "start_time", "type")
+    COLUMNS = (
+        "symbol", "tf", "start_time", "end_time",
+        "avg_price", "limit_avg_price", "limit_max_price",
+        "type", "status",
+    )
+
+
+class PainDrawdownRepository(AtomRepository[PainDrawdownSegment]):
+    TABLE = "atoms_pain_drawdown_segments"
+    MODEL = PainDrawdownSegment
+    PRIMARY = ("symbol", "tf", "start_time", "type")
+    COLUMNS = (
+        "symbol", "tf", "start_time", "end_time",
+        "avg_price", "pain_avg_price", "pain_max_price",
+        "type", "status",
+    )
+
+
+class TimeWindowRepository(AtomRepository[TimeWindowSegment]):
+    TABLE = "atoms_time_windows"
+    MODEL = TimeWindowSegment
+    PRIMARY = ("symbol", "tf", "start_time", "type")
+    COLUMNS = (
+        "symbol", "tf", "start_time", "end_time", "last_update_time",
+        "avg_price", "limit_avg_time", "limit_max_time",
+        "type", "status",
+    )
+
+
+class DdToleranceRepository(AtomRepository[DdToleranceSegment]):
+    """涨跌极限段：trailing_line/pierces 以 JSON 存储。"""
+
+    TABLE = "atoms_dd_tolerance_segments"
+    MODEL = DdToleranceSegment
+    PRIMARY = ("symbol", "tf", "id")
+    COLUMNS = (
+        "symbol", "tf", "id", "start_time", "end_time",
+        "limit_pct", "status", "trailing_line", "pierces",
+    )
+
+    @classmethod
+    def _transform_write(cls, row, model_data):
+        row["trailing_line"] = json.dumps(model_data.get("trailing_line") or [])
+        row["pierces"] = json.dumps(model_data.get("pierces") or [])
+        return row
+
+    @classmethod
+    def _transform_read(cls, row):
+        row["trailing_line"] = json.loads(row.get("trailing_line") or "[]")
+        row["pierces"] = json.loads(row.get("pierces") or "[]")
+        return row
+
+
+class CascadeBandRepository(AtomRepository[CascadeBand]):
+    TABLE = "atoms_cascade_bands"
+    MODEL = CascadeBand
+    PRIMARY = ("symbol", "tf", "start_time", "type", "avg_price")
+    COLUMNS = (
+        "symbol", "tf", "start_time",
+        "bottom_price", "top_price", "avg_price",
+        "volume", "signal_count", "type",
+    )
+
+
+class RetailStopBandRepository(AtomRepository[RetailStopBand]):
+    TABLE = "atoms_retail_stop_bands"
+    MODEL = RetailStopBand
+    PRIMARY = ("symbol", "tf", "start_time", "type", "avg_price")
+    COLUMNS = (
+        "symbol", "tf", "start_time",
+        "bottom_price", "top_price", "avg_price",
+        "volume", "type",
+    )
+
+
 # ════════════════ 聚合 façade：一次注入全部 repo ════════════════
 
 
 class AtomRepositories:
-    """把 22 个 repo 打包成一个容器，供 parser/engine 注入。"""
+    """把 22+7 个 repo 打包成一个容器，供 parser/engine 注入。"""
 
     def __init__(self, db) -> None:
         self.cvd = CvdRepository(db)
@@ -261,11 +359,23 @@ class AtomRepositories:
         self.time_heatmap = TimeHeatmapRepository(db)
         self.trend_saturation = TrendSaturationRepository(db)
 
+        # V1.1 扩展 7 个
+        self.choch_events = ChochEventRepository(db)
+        self.roi_segments = RoiSegmentRepository(db)
+        self.pain_drawdown = PainDrawdownRepository(db)
+        self.time_windows = TimeWindowRepository(db)
+        self.dd_tolerance = DdToleranceRepository(db)
+        self.cascade_bands = CascadeBandRepository(db)
+        self.retail_stop_bands = RetailStopBandRepository(db)
+
 
 __all__ = [
     "AbsoluteZoneRepository",
     "AtomRepositories",
+    "CascadeBandRepository",
+    "ChochEventRepository",
     "CvdRepository",
+    "DdToleranceRepository",
     "HeatmapRepository",
     "HvnNodeRepository",
     "ImbalanceRepository",
@@ -273,12 +383,16 @@ __all__ = [
     "LiquidationFuelRepository",
     "MicroPocRepository",
     "OrderBlockRepository",
+    "PainDrawdownRepository",
     "PocShiftRepository",
     "PowerImbalanceRepository",
     "ResonanceEventRepository",
+    "RetailStopBandRepository",
+    "RoiSegmentRepository",
     "SmartMoneyRepository",
     "SweepEventRepository",
     "TimeHeatmapRepository",
+    "TimeWindowRepository",
     "TrailingVwapRepository",
     "TrendExhaustionRepository",
     "TrendPurityRepository",

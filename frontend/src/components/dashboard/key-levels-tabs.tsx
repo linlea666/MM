@@ -7,18 +7,20 @@ type TabKey = "all" | "support" | "resistance";
 type DistanceKey = "near" | "mid" | "far";
 
 interface RowData {
-  label: string; // R1 / R2 / R3 / S1 / S2 / S3
+  label: string; // R1 / R2 / R3 / S1 / S2 / S3 / R+n / S+n
   level: Level;
   side: "support" | "resistance";
   gapPct: number; // 相对当前价，带符号
   absGap: number;
   distance: DistanceKey;
+  /** 来自 ladder 阶梯（R1/S1 等）还是远距列表（far_above/far_below） */
+  origin: "ladder" | "far";
 }
 
-const DISTANCE_RANGES: Record<DistanceKey, { label: string; hint: string; min: number; max: number }> = {
-  near: { label: "近距", hint: "0.25–1.5%", min: 0, max: 1.5 },
-  mid: { label: "中距", hint: "1.5–4%", min: 1.5, max: 4 },
-  far: { label: "远距", hint: "4–12%", min: 4, max: 12 },
+const DISTANCE_RANGES: Record<DistanceKey, { label: string; hint: string }> = {
+  near: { label: "近距", hint: "0.25–1.5%" },
+  mid: { label: "中距", hint: "1.5–4%" },
+  far: { label: "远距", hint: "≥1%（可配）" },
 };
 
 function classifyDistance(absGap: number): DistanceKey {
@@ -40,7 +42,12 @@ export function KeyLevelsTabs({ ladder, livePrice }: Props) {
   const current = livePrice ?? ladder.current_price;
 
   const rows = useMemo<RowData[]>(() => {
-    const make = (lv: Level | null | undefined, label: string, side: "support" | "resistance"): RowData | null => {
+    const make = (
+      lv: Level | null | undefined,
+      label: string,
+      side: "support" | "resistance",
+      origin: "ladder" | "far" = "ladder",
+    ): RowData | null => {
       if (!lv) return null;
       const gapPct = ((lv.price - current) / current) * 100;
       const absGap = Math.abs(gapPct);
@@ -50,11 +57,12 @@ export function KeyLevelsTabs({ ladder, livePrice }: Props) {
         side,
         gapPct,
         absGap,
-        distance: classifyDistance(absGap),
+        distance: origin === "far" ? "far" : classifyDistance(absGap),
+        origin,
       };
     };
     const list: RowData[] = [];
-    const candidates = [
+    const ladderRows = [
       make(ladder.r1, "R1", "resistance"),
       make(ladder.r2, "R2", "resistance"),
       make(ladder.r3, "R3", "resistance"),
@@ -62,8 +70,18 @@ export function KeyLevelsTabs({ ladder, livePrice }: Props) {
       make(ladder.s2, "S2", "support"),
       make(ladder.s3, "S3", "support"),
     ];
-    for (const row of candidates) if (row) list.push(row);
-    // 按距当前价由近到远排序
+    for (const row of ladderRows) if (row) list.push(row);
+
+    // V1.1 · 远距（按距当前价由近→远；label 用 R+N/S+N）
+    (ladder.far_above ?? []).forEach((lv, i) => {
+      const r = make(lv, `R+${i + 4}`, "resistance", "far");
+      if (r) list.push(r);
+    });
+    (ladder.far_below ?? []).forEach((lv, i) => {
+      const r = make(lv, `S+${i + 4}`, "support", "far");
+      if (r) list.push(r);
+    });
+
     list.sort((a, b) => a.absGap - b.absGap);
     return list;
   }, [ladder, current]);

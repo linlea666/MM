@@ -1,11 +1,14 @@
 """突破确认分 scorer。
 
 维度：
-1. level_pierced    最近 N 根穿越关键位（幅度 ≥ pierce_atr_mult * ATR 才算）
-2. whale_resonance  鲸鱼共振次数
-3. power_imbalance  能量条极端放大
-4. ob_decayed       订单墙已衰减（V1：用 trend_purity 做代理）
+1. level_pierced    事件窗 ``recent_window_bars`` 内穿越关键位（幅度 ≥ ``pierce_atr_mult`` × ATR 才算真突破）
+2. whale_resonance  鲸鱼共振次数（事件窗内同向计数）
+3. power_imbalance  能量条连续放大（官方"连续 3 根"口径，详见 power_imbalance.md）
+4. ob_decayed       订单墙已衰减（V1：用 trend_purity 做代理，阈值见 ``ob_decay_threshold``）
 5. space_ahead      前方有 vacuum / fuel（空间支持）
+6. bos_confirm      V1.1：⚡ 机构 BOS 结构延续事件（docs：inst_choch 右侧确认）
+                    —— 默认 weight=0（保守修改：现有配置不受影响）。
+                    启用时请同比减小其他维度权重，使总权重 = 1.0。
 """
 
 from __future__ import annotations
@@ -72,27 +75,35 @@ def score_breakout(
             direction = "bearish"
 
     # 1) 关键位穿越 + 幅度 ≥ pierce_atr_mult * ATR
+    # —— pierce_atr_ratio = 本次穿越幅度 / ATR（特征层已算好）。
+    # ratio = pierce_atr_ratio / (pierce_atr_mult * 2)，在 atr_mult 位置得 0.5 分，
+    # 2 * atr_mult 位置得满分；<atr_mult 视为擦线。
     w = float(weights.get("level_pierced", 0.25))
     atr_mult = float(thr.get("pierce_atr_mult", 0.3))
     pierced = snap.just_broke_resistance or snap.just_broke_support
     ratio = 0.0
     note = ""
-    if pierced and snap.atr and snap.atr > 0:
-        # 简化：用 nearest 位距离 ATR 比例作强度
-        if direction == "bullish" and snap.nearest_resistance_price is not None:
-            # 已穿越，nearest 现在可能已是 support；用 atr 粗粒度强度
-            ratio = 1.0 if atr_mult > 0 else 0.0
-            note = f"近 N 根穿越（bullish），atr={round(snap.atr, 2)}"
-        elif direction == "bearish" and snap.nearest_support_price is not None:
-            ratio = 1.0
-            note = f"近 N 根穿越（bearish），atr={round(snap.atr, 2)}"
-        else:
-            ratio = 0.5
-            note = "穿越但方向模糊"
+    if pierced and snap.pierce_atr_ratio is not None and atr_mult > 0:
+        target = 2.0 * atr_mult
+        ratio = max(0.0, min(1.0, snap.pierce_atr_ratio / target))
+        # 未达到 atr_mult 视为擦线 → hit=False（ratio 可能仍 >0，但 hit 收紧）
+        passed = snap.pierce_atr_ratio >= atr_mult
+        note = (
+            f"pierce/ATR={round(snap.pierce_atr_ratio, 3)}"
+            f"（阈 {atr_mult}）{'通过' if passed else '擦线'}"
+        )
+        hit_pierce = passed
+    elif pierced:
+        # ATR 缺失或 atr_mult=0：退化为布尔穿越，给 0.5
+        ratio = 0.5
+        note = "穿越但 ATR 缺失，无法验证幅度"
+        hit_pierce = True
+    else:
+        hit_pierce = False
     evs.append(
         Evidence(
             rule_id="level_pierced", label="关键位穿越",
-            weight=w, hit=pierced, ratio=ratio,
+            weight=w, hit=hit_pierce, ratio=ratio,
             value=f"broke_r={snap.just_broke_resistance}, broke_s={snap.just_broke_support}",
             threshold=f"atr_mult={atr_mult}",
             note=note,
@@ -120,6 +131,11 @@ def score_breakout(
     )
 
     # 3) power_imbalance 放大
+    # 官方口径（docs/upstream-api/endpoints/power_imbalance.md §大屏使用）：
+    #   连续 3 根 ratio > 3 且同向 → "逼空/逼多" → 真突破力量确认
+    # 所以评分分两档：
+    #   streak ≥ 3 且同突破方向 → 满分
+    #   仅最新一根 ratio ≥ min_r → 中分
     w = float(weights.get("power_imbalance", 0.15))
     min_r = float(thr.get("power_imbalance_ratio", 1.5))
     pi = snap.power_imbalance_last
@@ -132,41 +148,54 @@ def score_breakout(
             )
         )
     else:
-        hit = pi.ratio >= min_r
+        aligned = (
+            (direction == "bullish" and snap.power_imbalance_streak_side == "buy")
+            or (direction == "bearish" and snap.power_imbalance_streak_side == "sell")
+            or direction == "neutral"
+        )
+        if snap.power_imbalance_streak >= 3 and aligned:
+            r = 1.0
+            hit = True
+            note = f"连续 {snap.power_imbalance_streak} 根 ratio≥阈，side={snap.power_imbalance_streak_side}"
+        else:
+            r = ratio_above(pi.ratio, min_r)
+            hit = pi.ratio >= min_r
+            note = f"streak={snap.power_imbalance_streak} side={snap.power_imbalance_streak_side}"
         evs.append(
             Evidence(
                 rule_id="power_imbalance", label="能量条极端放大",
-                weight=w, hit=hit, ratio=ratio_above(pi.ratio, min_r),
+                weight=w, hit=hit, ratio=r,
                 value=round(pi.ratio, 3), threshold=min_r,
+                note=note,
             )
         )
 
     # 4) order block 已衰减（代理：trend_purity 高 → OB 未被反复磨损，更易突破）
-    #    V1 简化：purity >= 50 给 1，< 30 给 0，中间线性
+    # yaml 里 ob_decay_threshold 原意是 "OB 剩余可用度 < (1-threshold) 视为已衰减"，
+    # 默认 0.6 → 纯度 ≥ 60 判未衰减。这里把 ob_decay_threshold × 100 作为 purity 满分线，
+    # 0 作为零分线，线性映射；hit=ratio ≥ 0.5。
     w = float(weights.get("ob_decayed", 0.15))
+    ob_threshold = float(thr.get("ob_decay_threshold", 0.6))
+    purity_full = max(1.0, ob_threshold * 100.0)  # 避免 threshold=0 除零
     tp = snap.trend_purity_last
     if tp is None:
         evs.append(
             Evidence(
                 rule_id="ob_decayed", label="订单墙状态",
                 weight=w, hit=False, ratio=0.0, value=None,
+                threshold=f"purity≥{purity_full}",
                 note="无 trend_purity（代理信号）",
             )
         )
     else:
-        # 纯度高说明趋势干净、OB 没被磨
         purity = tp.purity
-        if purity >= 50:
-            r = 1.0
-        elif purity <= 30:
-            r = 0.0
-        else:
-            r = (purity - 30) / 20.0
+        r = max(0.0, min(1.0, purity / purity_full))
         evs.append(
             Evidence(
                 rule_id="ob_decayed", label="订单墙状态（trend_purity 代理）",
                 weight=w, hit=r >= 0.5, ratio=r,
-                value=round(purity, 2), threshold=50,
+                value=round(purity, 2), threshold=purity_full,
+                note=f"ob_decay_threshold={ob_threshold}（→ purity 满分线 {purity_full}）",
             )
         )
 
@@ -180,6 +209,36 @@ def score_breakout(
             value=space_note,
         )
     )
+
+    # 6) V1.1 · BOS 右侧结构延续（docs/upstream-api/endpoints/inst_choch.md）
+    # 官方口径：⚡ BOS = 机构带量突破前高/前低，趋势延续确立，无需等收线。
+    # 覆盖 direction：BOS_Bullish → bullish，BOS_Bearish → bearish。
+    # 权重默认 0（保守修改），启用时同比减其他维度使总权重=1。
+    w = float(weights.get("bos_confirm", 0.0))
+    max_bars = int(thr.get("bos_max_bars_since", 3))
+    ch = snap.choch_latest
+    if ch is not None and (not ch.is_choch) and ch.bars_since <= max_bars and max_bars > 0:
+        r = max(0.0, 1.0 - (ch.bars_since / max_bars))
+        bos_dir: Direction = "bullish" if ch.direction == "bullish" else "bearish"
+        # BOS 最强证据：命中即覆盖 direction（带量突破 = 真金白银）
+        direction = bos_dir
+        evs.append(
+            Evidence(
+                rule_id="bos_confirm", label="⚡ BOS 结构延续",
+                weight=w, hit=True, ratio=r,
+                value=f"{ch.type} @ level={ch.level_price}",
+                threshold=f"bars_since≤{max_bars}",
+                note=f"bars_since={ch.bars_since}，direction={ch.direction}",
+            )
+        )
+    else:
+        evs.append(
+            Evidence(
+                rule_id="bos_confirm", label="⚡ BOS 结构延续",
+                weight=w, hit=False, ratio=0.0, value=None,
+                note="近窗无 BOS 事件或已超时",
+            )
+        )
 
     score = finalize_score(evs)
     return CapabilityScore(

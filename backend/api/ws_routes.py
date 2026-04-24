@@ -5,11 +5,12 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 
+from backend.core.timeframes import DEFAULT_TF
 from backend.storage.repositories import SubscriptionRepository
 
-from .deps import normalize_symbol, normalize_tf
+from .deps import normalize_tf, resolve_active_symbol
 from .ws_brokers import DashboardBroker, LogBroker
 
 logger = logging.getLogger("api.ws")
@@ -45,21 +46,25 @@ async def ws_dashboard(ws: WebSocket) -> None:
             action = msg.get("action")
 
             if action == "subscribe":
+                # V1.1 · 单一真源：tf ∈ {30m,1h,4h}；symbol 必须在 active 订阅中
                 try:
-                    tf = normalize_tf(msg.get("tf") or "30m")
-                    sym_raw = msg.get("symbol")
-                    if sym_raw:
-                        symbol = normalize_symbol(sym_raw)
-                    else:
-                        active = await sub_repo.list_active()
-                        if not active:
-                            await ws.send_json({
-                                "type": "error",
-                                "code": "NO_ACTIVE_SUBSCRIPTION",
-                            })
-                            continue
-                        symbol = active[0].symbol
-                except Exception as e:   # HTTPException or others
+                    tf = normalize_tf(msg.get("tf") or DEFAULT_TF)
+                    symbol = await resolve_active_symbol(msg.get("symbol"), sub_repo)
+                except HTTPException as he:
+                    # 404（NO_ACTIVE_SUBSCRIPTION）与 400（格式 / tf 非法）统一
+                    # 翻译成 ws 协议错误帧，便于前端显示可读信息
+                    code = (
+                        "NO_ACTIVE_SUBSCRIPTION"
+                        if he.status_code == 404
+                        else "BAD_REQUEST"
+                    )
+                    await ws.send_json({
+                        "type": "error",
+                        "code": code,
+                        "message": str(he.detail),
+                    })
+                    continue
+                except Exception as e:   # noqa: BLE001
                     await ws.send_json({
                         "type": "error",
                         "code": "BAD_REQUEST",

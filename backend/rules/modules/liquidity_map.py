@@ -18,6 +18,8 @@ from ..scoring.common import cfg_path
 _SRC_HEATMAP = "heatmap"
 _SRC_FUEL = "fuel"
 _SRC_VACUUM = "vacuum"
+_SRC_CASCADE = "cascade"   # V1.1 · 💣 机构连环爆仓带（雷区插针）
+_SRC_RETAIL = "retail"     # V1.1 · 散户止损带（磁吸方向）
 
 
 def _build_candidates(snap: FeatureSnapshot) -> list[tuple[MagnetCandidate, str]]:
@@ -74,6 +76,48 @@ def _build_candidates(snap: FeatureSnapshot) -> list[tuple[MagnetCandidate, str]
                 _SRC_VACUUM,
             )
         )
+
+    # V1.1 · 💣 cascade_liquidation 带 —— 雷区插针反向接针 战法
+    # 强度映射：signal_count 归一化到 heatmap_intensity 语义（liquidity density）
+    if snap.cascade_bands:
+        max_sc = max(
+            (b.signal_count or 0) for b in snap.cascade_bands if b.signal_count is not None
+        ) or 1.0
+        for b in snap.cascade_bands:
+            if not b.signal_count:
+                continue
+            dist = abs(b.avg_price - price) / price if price > 0 else 0
+            out.append(
+                (
+                    MagnetCandidate(
+                        price=b.avg_price,
+                        side="upside" if b.above_price else "downside",
+                        heatmap_intensity=float(min(1.0, b.signal_count / max_sc)),
+                        distance_pct=dist,
+                    ),
+                    _SRC_CASCADE,
+                )
+            )
+
+    # V1.1 · retail_stop_loss 带 —— 磁吸方向判定战法
+    # 强度映射：volume 归一化到 heatmap_intensity 语义
+    if snap.retail_stop_bands:
+        max_vol = max((b.volume or 0.0) for b in snap.retail_stop_bands) or 1.0
+        for b in snap.retail_stop_bands:
+            if not b.volume:
+                continue
+            dist = abs(b.avg_price - price) / price if price > 0 else 0
+            out.append(
+                (
+                    MagnetCandidate(
+                        price=b.avg_price,
+                        side="upside" if b.above_price else "downside",
+                        heatmap_intensity=float(min(1.0, b.volume / max_vol)),
+                        distance_pct=dist,
+                    ),
+                    _SRC_RETAIL,
+                )
+            )
     return out
 
 

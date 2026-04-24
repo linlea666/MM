@@ -11,6 +11,11 @@ import {
   PhaseCompact,
   LiquidityCompact,
 } from "@/components/dashboard/compact-cards";
+import { AIObservationCard } from "@/components/dashboard/ai-observation-card";
+import { ChochCard } from "@/components/dashboard/choch-card";
+import { LiquidationBandsCard } from "@/components/dashboard/liquidation-bands-card";
+import { RetailBandsCard } from "@/components/dashboard/retail-bands-card";
+import { SegmentPortraitCard } from "@/components/dashboard/segment-portrait-card";
 import { TimelineCard } from "@/components/dashboard/timeline-card";
 import { CapabilityScoresInline } from "@/components/dashboard/capability-scores-inline";
 import { DashboardSkeleton } from "@/components/dashboard/dashboard-skeleton";
@@ -49,6 +54,9 @@ export default function DashboardPage() {
       {/* 行 1：结论带（实时价 + 一句话结论 + 策略建议） */}
       <HeroVerdict snap={snap} />
 
+      {/* 行 1.5：V1.1 · Phase 9 · AI 观察卡（未启用时显示引导；启用后随 snapshot 刷新） */}
+      <AIObservationCard summary={snap.ai ?? null} symbol={symbol} tf={tf} />
+
       {/* 数据不新鲜提醒 */}
       {!snap.health.fresh && (
         <Badge variant="warning" className="gap-1.5 px-3 py-1">
@@ -80,6 +88,30 @@ export default function DashboardPage() {
           <ActionTriggers snap={snap} />
         </div>
       </div>
+
+      {/* 行 2.5：V1.1 数字化观察 —— ⚡ CHoCH / 💣 爆仓带 / 散户止损 / 波段四维 */}
+      {snap.cards && (
+        <div className="grid gap-4 lg:grid-cols-12">
+          <div className="lg:col-span-3">
+            <ChochCard card={snap.cards.choch_latest} />
+          </div>
+          <div className="lg:col-span-3">
+            <LiquidationBandsCard
+              longFuel={snap.cards.cascade_long_fuel}
+              shortFuel={snap.cards.cascade_short_fuel}
+            />
+          </div>
+          <div className="lg:col-span-3">
+            <RetailBandsCard
+              longFuel={snap.cards.retail_long_fuel}
+              shortFuel={snap.cards.retail_short_fuel}
+            />
+          </div>
+          <div className="lg:col-span-3">
+            <SegmentPortraitCard card={snap.cards.segment} />
+          </div>
+        </div>
+      )}
 
       {/* 行 3：三张浓缩卡（说人话） */}
       <div className="grid gap-4 lg:grid-cols-12">

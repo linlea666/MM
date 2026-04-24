@@ -54,6 +54,29 @@
     --glow-cyan: 0 0 24px hsl(186 94% 58% / 0.35);
     --glow-magenta: 0 0 24px hsl(338 82% 58% / 0.35);
     --glow-lime: 0 0 22px hsl(140 72% 55% / 0.3);
+
+    /* V1.1 · 作战指挥主题用户自定义色（App.tsx 按后端 ui.theme_*_hex 动态写入）。
+       在 command_center 主题下被引用；其它主题保持默认，不受影响。 */
+    --theme-primary: #16D9E3;
+    --theme-accent: #58A6FF;
+    --theme-background: #0A1628;
+  }
+
+  /* command_center：作战指挥大屏主题（偏赛博青蓝 + 深海黑）。
+     原则：仅改底色/面板/辉光浅层，不改方向色（lime/magenta 仍代表多空），避免影响决策识别。 */
+  [data-theme="command_center"] {
+    --background: 218 60% 6%;
+    --foreground: 200 28% 96%;
+    --card: 218 48% 9%;
+    --card-foreground: 200 28% 96%;
+    --popover: 218 48% 9%;
+    --popover-foreground: 200 28% 96%;
+    --secondary: 218 28% 13%;
+    --muted: 218 24% 11%;
+    --muted-foreground: 210 18% 68%;
+    --accent: 218 26% 13%;
+    --border: 208 28% 20%;
+    --input: 208 28% 20%;
   }
 }
 
@@ -73,6 +96,28 @@
       radial-gradient(at 15% 12%, hsl(186 94% 58% / 0.06), transparent 40%),
       radial-gradient(at 85% 88%, hsl(320 94% 62% / 0.05), transparent 40%);
     background-attachment: fixed;
+  }
+
+  /* command_center：底色用用户自定义（--theme-background），顶光 / 底光用 primary / accent。
+     默认值在 :root 里给出，避免 JS 尚未注入时出现白底闪烁。 */
+  body[data-theme="command_center"] {
+    background-color: var(--theme-background);
+    background-image:
+      radial-gradient(
+        at 15% 10%,
+        color-mix(in srgb, var(--theme-primary) 12%, transparent),
+        transparent 45%
+      ),
+      radial-gradient(
+        at 85% 88%,
+        color-mix(in srgb, var(--theme-accent) 10%, transparent),
+        transparent 45%
+      ),
+      linear-gradient(
+        180deg,
+        color-mix(in srgb, var(--theme-background) 92%, transparent) 0%,
+        color-mix(in srgb, var(--theme-background) 100%, transparent) 60%
+      );
   }
 }
 

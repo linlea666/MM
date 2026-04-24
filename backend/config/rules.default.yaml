@@ -8,11 +8,16 @@
 
 # ─── 全局（引擎共享）───
 global:
-  lookback_bars: 120              # 特征窗口：最近 N 根 K 线
-  recent_window_bars: 8           # "最近" 窗口（共振/猎杀等事件判定）
+  lookback_bars: 120              # 结构特征窗口（斜率/CVD/VWAP）：最近 N 根
+  recent_window_bars: 8           # 事件窗口（共振/猎杀/imbalance 占比）：最近 N 根
   near_price_pct: 0.006           # 关键位"贴近"阈值 ±0.6%
   merge_level_pct: 0.003          # 关键位聚合：0.3% 内视为同一位
   level_ladder_min_spacing_pct: 0.005  # 档间最小间距 0.5%
+  # ——"连续 N 根" 判定窗（docs/upstream-api/endpoints/trend_exhaustion.md / power_imbalance.md）
+  exhaustion_window_bars: 3
+  power_imbalance_window_bars: 3
+  # V1.1：💣 爆仓带 / 散户止损带 TopN（多空各取 N 条，按强度降序）
+  band_topn: 5
 
 # ════════════════════════════════════════════════════════════════════
 # 能力评分（Capability Scores，统一 0-100）
@@ -67,11 +72,13 @@ capabilities:
       power_imbalance: 0.15
       ob_decayed: 0.15              # order block 已衰减
       space_ahead: 0.20             # 突破方向前方有真空/fuel
+      bos_confirm: 0.0              # V1.1：⚡ BOS 结构延续（默认关闭，开启后需同比减其他权重使总和=1）
     thresholds:
       pierce_atr_mult: 0.3          # 穿越幅度至少 0.3 * ATR（避免擦线）
       whale_resonance_count: 2      # ≥ 2 次共振判强
       power_imbalance_ratio: 1.5    # power_imbalance.ratio ≥ 此值算放大
       ob_decay_threshold: 0.6       # ob_decay 剩余 < 40% 视为已衰减
+      bos_max_bars_since: 3         # V1.1：BOS 事件须在最近 N 根内才计入（越新越满分）
     label_bands:
       strong_real: 70
       weak_real: 40
@@ -84,10 +91,15 @@ capabilities:
       exhaustion_high: 0.25
       fair_value_diverge: 0.20
       liq_pierce_recover: 0.25      # 刺穿清算带后收回
+      choch_reversal: 0.0           # V1.1：⚡ CHoCH 结构反转（默认关闭，开启后需同比减其他权重使总和=1）
+      time_exhausted: 0.0           # V1.1：趋势时间极限（撞死亡线/越虚线，默认关闭）
+      dd_pierce: 0.0                # V1.1：📌 移动护城河刺穿（默认关闭）
     thresholds:
       exhaustion_alert: 5           # trend_exhaustion ≥ 此值算高位
+      exhaustion_consecutive_min: 3 # 连续 N 根同 type 同 ≥ alert 才给满分
       fair_value_diverge_pct: 0.01  # |price - fair_value| / fair_value ≥ 1%
       liq_recover_bars: 3           # 刺穿后 N 根内回到带内
+      choch_max_bars_since: 3       # V1.1：CHoCH 事件须在最近 N 根内才计入（越新越满分）
     label_bands:
       very_high: 70
       high: 50
@@ -103,6 +115,8 @@ capabilities:
       smart_money: 10               # 主力成本
       trend_price: 10               # 订单块
       trailing_vwap: 10
+      cascade_band: 25              # V1.1：💣 机构连环爆仓带（雷区插针）
+      retail_band: 15               # V1.1：散户止损带（磁吸方向/破位追单）
       heatmap: 20                   # 清算带
     purity_bonus_max: 10            # trend_purity 纯度加分上限
     ob_decay_bonus_max: 10          # 未衰减加分上限
@@ -137,18 +151,17 @@ capabilities:
 # ════════════════════════════════════════════════════════════════════
 main_force_radar:
   labels:
+    # 注：accumulate / distribute 两条 label 不直接产出 alert（主标签由
+    # 4 个 CapabilityScore 在 _pick_main 里决定），也不参与排序打分，
+    # 因此只保留 require 硬门槛；已移除未接入的 soft 块。
     accumulate:
       require:
         accumulation_score_gte: 60
         distribution_score_lt: 30
-      soft:
-        saturation_lt: 50
     distribute:
       require:
         distribution_score_gte: 60
         accumulation_score_lt: 30
-      soft:
-        saturation_gt: 60
     support:                        # 护盘
       require:
         near_support: true
@@ -185,9 +198,11 @@ main_force_radar:
         saturation_gte: 70
     brewing:                        # 变盘前夕
       require:
-        cvd_converge: true          # |cvd_slope| < epsilon
+        cvd_converge: true          # 归一化后 |cvd_slope|/cvd_range < max_ratio
         vacuum_near: true
         active_session: true
+      # 归一化阈值（跨币种可比）：值越小越严格。经验默认 0.2 = 净流入/流出 <= 20% 振幅
+      cvd_converge_max_ratio: 0.2
   # 主标签从激活的 labels 里按 score 最大挑选，打平时按 priority 顺序
   priority_order:
     [pump, dump, accumulate, distribute, support, suppress,
@@ -231,8 +246,6 @@ phase_state_machine:
     chaotic:                        # 无序震荡（默认兜底）
       require: {}
   phase_score_threshold: 60         # 低于此值标 unstable
-  instability_flip_window_bars: 3
-  instability_max_flips: 2
 
 # ════════════════════════════════════════════════════════════════════
 # 模块 3：主力参与确认
@@ -260,6 +273,10 @@ key_levels:
     [hvn, absolute_zone, smart_money, trend_price, micro_poc, fvg, heatmap, trailing_vwap]
   r_levels: 3
   s_levels: 3
+  # V1.1 · 远距档（超出 R3/S3 之外的候选）
+  far_range_pct_min: 0.01           # 远距下限：距当前价 ≥1%
+  far_range_pct_max: 0.08           # 远距上限：距当前价 ≤8%（30m/1h 复盘友好）
+  max_far_count: 8                  # 远距每侧最多显示 8 条（用户可上调到 20）
   suit_logic:
     first_test_strong: "反弹"       # 首测 + 强 → 反弹
     worn_out: "观望"
@@ -271,6 +288,12 @@ key_levels:
 liquidity_map:
   dominant_diff: 10                 # 上下磁吸分差 ≥ 此值才判主方向
   neutral_band: 10                  # 否则标 neutral
+
+# ════════════════════════════════════════════════════════════════════
+# 模块 · Hero Strip（顶部 4 维度结论条）
+# ════════════════════════════════════════════════════════════════════
+hero:
+  choch_alert_bars: 3               # V1.1：⚡ CHoCH/BOS 在最近 N 根内命中时，在 market_structure 以闪电角标呈现
 
 # ════════════════════════════════════════════════════════════════════
 # 模块 6：交易建议（V1 规则输出，3 情景）
@@ -288,13 +311,16 @@ trade_plan:
   position_size:
     light_max_stars: 2              # ≤ 此星级标轻仓
     heavy_min_stars: 4              # ≥ 此星级标重仓
+  use_segment_portrait: false       # V1.1：是否用波段四维（ROI/Pain/Time/DdTolerance）覆盖止盈止损（默认关闭）
   veto:
     exhaustion: 7                   # exhaustion ≥ 此值否决顺势追入
     purity: 30                      # trend_purity < 此值降级
     active_session: 0.3             # time_heatmap 活跃度 < 此值降级
+    time_exhausted: false           # V1.1：bars_to_max ≤ 0（已撞死亡线）→ 强制观望（默认关闭）
+    dd_pierced: false               # V1.1：📌 护城河刺穿次数 ≥ 1 → 强制观望（默认关闭）
 
 # ════════════════════════════════════════════════════════════════════
-# AI 观察模式（V1.1 启用）
+# AI 观察模式（V1.0 遗留占位，未被消费；V1.1 Phase 9 的新结构在下方 ai.*）
 # ════════════════════════════════════════════════════════════════════
 ai_observer:
   enabled: false                    # V1 暂不启用
@@ -308,11 +334,53 @@ ai_observer:
   max_observations_per_run: 3
 
 # ════════════════════════════════════════════════════════════════════
+# V1.1 · Phase 9 · AI 观察模式（统一模型：L1 趋势分类 → L2 资金解读 → [条件触发] L3 交易计划）
+# ════════════════════════════════════════════════════════════════════
+ai:
+  enabled: false                    # 默认关闭；前端 /settings 开启
+  provider: "deepseek"              # "deepseek" | "stub"
+  api_key: ""                       # secret：前端 password 输入，全链路 mask 显示
+  base_url: "https://api.deepseek.com"
+
+  # V1.1 · 统一模型（不再 Hybrid）：三层全部用选中的 tier；默认 flash（省）
+  model_tier: "flash"               # "flash" | "pro"
+  thinking_enabled: false           # 思维模式；官方 thinking 与 json_object 互斥，
+                                    # 开启后 provider 会自动关 json_object+temperature，
+                                    # 靠 prompt 强约束 + 解析兜底输出 JSON；慢 2x-3x。
+
+  flash_model: "deepseek-v4-flash"  # 具体模型名（expert 字段，可覆盖官方）
+  pro_model: "deepseek-v4-pro"
+  proxy: ""                         # 可选：socks5://user:pass@host:port 或 http://host:port
+
+  # —— 触发 / 冷却 / 缓存 ——
+  observer:
+    min_interval_seconds: 180       # 两次触发最小间隔（防连发）
+    cache_ttl_seconds: 300          # 相同 anchor_ts 的结果缓存窗
+    # —— Layer 3（交易计划）自动升级阈值 ——
+    auto_trade_plan: true           # 达阈值时自动调 pro 出计划；关掉则只靠"求交易计划"按钮手动触发
+    auto_trend_confidence: 0.70     # L1 置信度 ≥ 此值
+    auto_money_flow_confidence: 0.60  # L2 置信度 ≥ 此值
+    timeout_s_flash: 20.0
+    timeout_s_pro: 45.0
+    temperature_flash: 0.2
+    temperature_pro: 0.15
+
+  # —— 存储 ——
+  storage:
+    history_ring_size: 50           # 内存环形缓冲大小（REST/WS 的最近 N 条）
+    jsonl_relpath: "data/ai_observations.jsonl"  # 相对 backend/ 的持久化文件
+
+# ════════════════════════════════════════════════════════════════════
 # UI 偏好（前端 /settings 可改，不影响后端行为）
 # ════════════════════════════════════════════════════════════════════
 ui:
   refresh_ms: 5000
-  theme: "dark"
+  # V1.1 · 大屏主题：command_center = 作战指挥（偏赛博青蓝），dark/light 保留兼容
+  theme: "command_center"
+  # V1.1 · 自定义主色（仅 command_center 主题生效；前端 <input type="color"> 渲染）
+  theme_primary_hex: "#16D9E3"         # 作战主色：赛博青
+  theme_accent_hex: "#58A6FF"          # 辅助蓝：次要信息 / 坐标角标
+  theme_background_hex: "#0A1628"      # 深海黑蓝底色
   cards:
     main_force_radar: true
     phase_state_machine: true

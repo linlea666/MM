@@ -51,6 +51,9 @@ def _veto_reason(snap: FeatureSnapshot, cfg: dict[str, Any] | None) -> str | Non
     ex_th = int(cfg_path(cfg, "trade_plan.veto.exhaustion", 7))
     purity_th = float(cfg_path(cfg, "trade_plan.veto.purity", 30))
     active_th = float(cfg_path(cfg, "trade_plan.veto.active_session", 0.3))
+    # V1.1：波段四维否决条件（默认全部关闭 → 零行为影响）
+    time_veto = bool(cfg_path(cfg, "trade_plan.veto.time_exhausted", False))
+    dd_veto = bool(cfg_path(cfg, "trade_plan.veto.dd_pierced", False))
 
     reasons: list[str] = []
     te = snap.trend_exhaustion_last
@@ -63,6 +66,13 @@ def _veto_reason(snap: FeatureSnapshot, cfg: dict[str, Any] | None) -> str | Non
         reasons.append(
             f"时段活跃度 {round(snap.current_hour_activity, 2)} < {active_th}"
         )
+    # V1.1 · 趋势时间死亡线（越过 = 撞黄墙，立刻全平）
+    sp = snap.segment_portrait
+    if time_veto and sp is not None and sp.bars_to_max is not None and sp.bars_to_max <= 0:
+        reasons.append(f"已撞时间死亡线 bars_to_max={sp.bars_to_max}")
+    # V1.1 · 📌 护城河已破（dd_pierce_count ≥ 1 → 强制观望）
+    if dd_veto and sp is not None and sp.dd_pierce_count is not None and sp.dd_pierce_count >= 1:
+        reasons.append(f"📌 护城河刺穿 {sp.dd_pierce_count} 次")
     return "; ".join(reasons) if reasons else None
 
 
@@ -98,6 +108,8 @@ def _plan_bullish(
     stop_buf = float(cfg_path(cfg, "trade_plan.stop_buffer_pct", 0.003))
     tp_ratios = cfg_path(cfg, "trade_plan.target_ratios", [1.5, 3.0]) or [1.5, 3.0]
     bands = cfg_path(cfg, "trade_plan.stars", {}) or {}
+    # V1.1：波段四维开关（默认 false → 完全兼容现有行为）
+    use_portrait = bool(cfg_path(cfg, "trade_plan.use_segment_portrait", False))
 
     # 基础分：max(accumulation, breakout_bullish)
     brk = caps["breakout"]
@@ -106,15 +118,28 @@ def _plan_bullish(
     stars = _stars_from_score(base, bands)
     entry = _entry_range(price, entry_pct)
 
-    # stop = 最近支撑 - 缓冲
+    sp = snap.segment_portrait if use_portrait else None
+
+    # stop = 最近支撑 - 缓冲；V1.1：若开启 portrait 且有 pain_max 在更近（上方）→ 用 pain_max
     if snap.nearest_support_price:
         stop = round(snap.nearest_support_price * (1 - stop_buf), 6)
     else:
         atr = snap.atr or (price * 0.005)
         stop = round(price - atr, 6)
+    # V1.1：pain_max_price = "实线极限防线" 击穿 = 溃败 → 更严格的止损
+    if sp is not None and sp.pain_max_price is not None and sp.pain_max_price < price:
+        pain_stop = round(sp.pain_max_price * (1 - stop_buf), 6)
+        # 取更接近当前价的（更严格）止损，避免把止损挂得过远
+        if pain_stop > stop:
+            stop = pain_stop
 
     risk = price - stop
-    tps = [round(price + risk * r, 6) for r in tp_ratios] if risk > 0 else []
+    # V1.1：T1/T2 优先用 roi_limit_avg_price / roi_limit_max_price（官方"及格线"/"天花板"）
+    if sp is not None and sp.roi_limit_avg_price is not None and sp.roi_limit_max_price is not None \
+            and sp.roi_limit_avg_price > price and sp.roi_limit_max_price > price:
+        tps = [round(sp.roi_limit_avg_price, 6), round(sp.roi_limit_max_price, 6)]
+    else:
+        tps = [round(price + risk * r, 6) for r in tp_ratios] if risk > 0 else []
 
     action: TradeAction = "追多" if brk.direction == "bullish" and brk.score >= 60 else "回踩做多"
     premise = (
@@ -135,6 +160,7 @@ def _plan_bearish(
     stop_buf = float(cfg_path(cfg, "trade_plan.stop_buffer_pct", 0.003))
     tp_ratios = cfg_path(cfg, "trade_plan.target_ratios", [1.5, 3.0]) or [1.5, 3.0]
     bands = cfg_path(cfg, "trade_plan.stars", {}) or {}
+    use_portrait = bool(cfg_path(cfg, "trade_plan.use_segment_portrait", False))
 
     brk = caps["breakout"]
     brk_contrib = brk.score if brk.direction == "bearish" else 0
@@ -142,14 +168,25 @@ def _plan_bearish(
     stars = _stars_from_score(base, bands)
     entry = _entry_range(price, entry_pct)
 
+    sp = snap.segment_portrait if use_portrait else None
+
     if snap.nearest_resistance_price:
         stop = round(snap.nearest_resistance_price * (1 + stop_buf), 6)
     else:
         atr = snap.atr or (price * 0.005)
         stop = round(price + atr, 6)
+    # V1.1：pain_max_price 对称：做空时 > price 即视作上方极限防线
+    if sp is not None and sp.pain_max_price is not None and sp.pain_max_price > price:
+        pain_stop = round(sp.pain_max_price * (1 + stop_buf), 6)
+        if pain_stop < stop:
+            stop = pain_stop
 
     risk = stop - price
-    tps = [round(price - risk * r, 6) for r in tp_ratios] if risk > 0 else []
+    if sp is not None and sp.roi_limit_avg_price is not None and sp.roi_limit_max_price is not None \
+            and sp.roi_limit_avg_price < price and sp.roi_limit_max_price < price:
+        tps = [round(sp.roi_limit_avg_price, 6), round(sp.roi_limit_max_price, 6)]
+    else:
+        tps = [round(price - risk * r, 6) for r in tp_ratios] if risk > 0 else []
 
     action: TradeAction = "追空" if brk.direction == "bearish" and brk.score >= 60 else "反弹做空"
     premise = (

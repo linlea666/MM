@@ -3,9 +3,9 @@
 输入：FeatureSnapshot + 4 个 CapabilityScore
 输出：PhaseState
 
-注意：V1 没有历史快照对比，prev_phase / bars_in_phase / unstable 全部留空或 False，
-Step 3.5 RuleRunner 会基于滑动窗口补上。
-"""
+注意：单次 tick 不保存历史，``bars_in_phase`` 恒 0；``prev_phase`` 由
+``RuleRunner`` 跨 tick 传入，``unstable`` 仅由本 tick 的 ``phase_score`` 判定
+（``phase_state_machine.phase_score_threshold``）。"""
 
 from __future__ import annotations
 

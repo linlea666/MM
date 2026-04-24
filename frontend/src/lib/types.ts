@@ -108,6 +108,9 @@ export interface LevelLadder {
   s1?: Level | null;
   s2?: Level | null;
   s3?: Level | null;
+  /** V1.1 · 远距候选（超出 R3/S3 之外，按距当前价由近→远） */
+  far_above?: Level[];
+  far_below?: Level[];
 }
 
 export interface LiquidityTarget {
@@ -176,6 +179,65 @@ export interface DashboardHealth {
   warnings: string[];
 }
 
+// ─── V1.1 · 数字化白话卡（后端 backend/models.py DashboardCards）────
+
+export type BandFuelSide = "long_fuel" | "short_fuel";
+
+export interface ChochCard {
+  ts: number;
+  price: number;
+  level_price: number;
+  type: string;
+  kind: "CHoCH" | "BOS";
+  direction: "bullish" | "bearish";
+  distance_pct: number;
+  bars_since: number;
+  hint: string;
+}
+
+export interface BandCard {
+  start_time: number;
+  avg_price: number;
+  top_price: number;
+  bottom_price: number;
+  side: BandFuelSide;
+  type: string;
+  above_price: boolean;
+  distance_pct: number;
+  intensity: number;
+  strength_label: string;
+  signal_count?: number | null;
+}
+
+export interface SegmentCard {
+  type?: string | null;
+  status?: string | null;
+  roi_avg_price?: number | null;
+  roi_limit_avg_price?: number | null;
+  roi_limit_max_price?: number | null;
+  pain_avg_price?: number | null;
+  pain_max_price?: number | null;
+  bars_to_avg?: number | null;
+  bars_to_max?: number | null;
+  time_avg_ts?: number | null;
+  time_max_ts?: number | null;
+  dd_trailing_current?: number | null;
+  dd_limit_pct?: number | null;
+  dd_pierce_count: number;
+  sources: Array<"roi" | "pain" | "time" | "dd_tolerance">;
+  hint: string;
+}
+
+export interface DashboardCards {
+  choch_latest?: ChochCard | null;
+  choch_recent: ChochCard[];
+  cascade_long_fuel: BandCard[];
+  cascade_short_fuel: BandCard[];
+  retail_long_fuel: BandCard[];
+  retail_short_fuel: BandCard[];
+  segment?: SegmentCard | null;
+}
+
 export interface DashboardSnapshot {
   timestamp: number;
   symbol: string;
@@ -192,6 +254,155 @@ export interface DashboardSnapshot {
   capability_scores: CapabilityScore[];
   recent_events: TimelineEvent[];
   health: DashboardHealth;
+  cards?: DashboardCards | null;
+  ai?: AIObserverSummary | null;
+}
+
+// ─── V1.1 · Phase 9 · AI 观察（统一模型） ─────────────
+// 单一真源：backend/ai/schemas.py （Pydantic extra="forbid"）
+// 任何前端扩展字段都会被后端 400，禁止偏离。
+
+export type AITrigger =
+  | "scheduled"
+  | "manual"
+  | "phase_switch"
+  | "urgent_signal";
+
+export type AIDirection = "bullish" | "bearish" | "neutral";
+
+export type AIStage =
+  | "accumulation"
+  | "breakout"
+  | "distribution"
+  | "trend_up"
+  | "trend_down"
+  | "reversal"
+  | "chop";
+
+export type AIStrength = "strong" | "moderate" | "weak";
+
+export type AIDominantSide =
+  | "smart_buy"
+  | "smart_sell"
+  | "retail_chase"
+  | "retail_flush"
+  | "neutral";
+
+export type AIBandKind =
+  | "cascade_long_fuel"
+  | "cascade_short_fuel"
+  | "retail_long_fuel"
+  | "retail_short_fuel";
+
+export type AISizeHint = "light" | "half" | "full";
+
+export interface AISummaryBandPreview {
+  kind: AIBandKind;
+  avg_price: number;
+  distance_pct: number;
+  note: string;
+}
+
+export interface AIObserverSummary {
+  ts: number;
+  age_seconds: number;
+  trigger: string;
+  provider: string;
+
+  // 趋势
+  trend_direction?: AIDirection | null;
+  trend_stage?: AIStage | null;
+  trend_strength?: AIStrength | null;
+  trend_confidence?: number | null;
+  trend_narrative?: string | null;
+
+  // 资金面
+  money_flow_dominant?: AIDominantSide | null;
+  money_flow_confidence?: number | null;
+  money_flow_narrative?: string | null;
+  key_bands_preview: AISummaryBandPreview[];
+
+  // 计划
+  has_trade_plan: boolean;
+  trade_plan_narrative?: string | null;
+  trade_plan_confidence?: number | null;
+  trade_plan_legs_count: number;
+  trade_plan_top_rr?: number | null;
+  risk_flags: string[];
+
+  // 元数据
+  layers_used: string[];
+  latency_ms: number;
+  tokens_total: number;
+
+  errors: Record<string, string>;
+}
+
+export interface AIObserverFeedItem {
+  ts: number;
+  symbol: string;
+  tf: string;
+  anchor_ts: number;
+  last_price: number;
+
+  layers_used: ("trend" | "money_flow" | "trade_plan")[];
+  models_used: Record<string, string>;
+  provider: string;
+  latency_ms: number;
+  cost_tokens: Record<string, number>; // 通常 {"prompt": n, "completion": n}
+
+  trend?: AITrendLayer | null;
+  money_flow?: AIMoneyFlowLayer | null;
+  trade_plan?: AITradePlanLayer | null;
+
+  trigger: AITrigger;
+  note?: string | null;
+  errors: Record<string, string>;
+}
+
+export interface AITrendLayer {
+  direction: AIDirection;
+  stage: AIStage;
+  strength: AIStrength;
+  confidence: number;
+  narrative: string;
+  evidences: string[];
+}
+
+export interface AIMoneyFlowBandEcho {
+  kind: AIBandKind;
+  avg_price: number;
+  distance_pct: number;
+  note: string;
+}
+
+export interface AIMoneyFlowLayer {
+  dominant_side: AIDominantSide;
+  pressure_above: string;
+  support_below: string;
+  key_bands: AIMoneyFlowBandEcho[];
+  narrative: string;
+  confidence: number;
+  evidences: string[];
+}
+
+export interface AITradePlanLeg {
+  direction: "long" | "short";
+  entry_zone: [number, number];
+  stop_loss: number;
+  take_profits: number[];
+  risk_reward: number;
+  size_hint: AISizeHint;
+  rationale: string;
+  invalidation: string;
+}
+
+export interface AITradePlanLayer {
+  legs: AITradePlanLeg[];
+  conditions: string[];
+  risk_flags: string[];
+  confidence: number;
+  narrative: string;
 }
 
 // ─── 订阅 / 系统 ─────────────────────────────────────
@@ -289,6 +500,15 @@ export interface ConfigItemMeta {
   step?: number;
   options?: (string | number)[];
   item_type?: ConfigItemType;
+  /** V1.1 · 特殊 string 子类型（前端控件切换）：目前支持 "color"。 */
+  format?: "color" | "secret";
+  /**
+   * V1.1 · Phase 5 · 小白/专家双模式：
+   * - "basic"  : 小白模式必出（推荐项 + 所有权重，约 60 项）
+   * - "expert" : 仅专家模式显示（阈值、细粒度参数、危险项）
+   * 未标注时前端视为 "expert"（向前兼容）。
+   */
+  tier?: "basic" | "expert";
 }
 
 export interface ConfigGroupMeta {

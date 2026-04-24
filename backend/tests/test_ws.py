@@ -127,6 +127,32 @@ def test_ws_dashboard_auto_pick_active_symbol(ws_client: TestClient) -> None:
         assert confirm["symbol"] == "BTC"
 
 
+def test_ws_dashboard_unknown_symbol_rejected(ws_client: TestClient) -> None:
+    """V1.1 · 币种单一真源：非 active 订阅 symbol 应被 WS 拒绝（NO_ACTIVE_SUBSCRIPTION）。"""
+    with ws_client.websocket_connect("/ws/dashboard") as ws:
+        ws.receive_json()
+        ws.send_json({"action": "subscribe", "symbol": "ETH", "tf": "30m"})
+        err = ws.receive_json()
+        assert err["type"] == "error"
+        assert err["code"] == "NO_ACTIVE_SUBSCRIPTION"
+        # message 给前端可读提示
+        assert "ETH" in err.get("message", "")
+
+
+def test_ws_dashboard_deprecated_tf_rejected(ws_client: TestClient) -> None:
+    """V1.1 · 周期单一真源：5m/15m/2h/1d 等老 tf 在 WS 侧也被拒绝。"""
+    for bad_tf in ("5m", "15m", "2h", "1d"):
+        with ws_client.websocket_connect("/ws/dashboard") as ws:
+            ws.receive_json()
+            ws.send_json({"action": "subscribe", "symbol": "BTC", "tf": bad_tf})
+            err = ws.receive_json()
+            assert err["type"] == "error"
+            assert err["code"] == "BAD_REQUEST"
+            assert bad_tf in err.get("message", "") or "白名单" in err.get(
+                "message", ""
+            )
+
+
 # ─── /ws/logs ──────────────────────────────────────────
 
 

@@ -76,6 +76,45 @@ def test_get_meta(api_client: TestClient) -> None:
     assert TIER1_KEY in body["items"]
 
 
+def test_meta_tier_basic_coverage(api_client: TestClient) -> None:
+    """V1.1 · Phase 5：meta.yaml 至少标注了约 60 条 basic tier key，
+    且涵盖所有权重/UI/关键位等常用项（小白模式的最小工作集）。"""
+    r = api_client.get("/api/config/meta")
+    assert r.status_code == 200
+    items: dict[str, dict] = r.json()["items"]
+    basic_keys = {k for k, v in items.items() if v.get("tier") == "basic"}
+
+    # 数量下限（B2 ≈ 60）；给足余地以允许小幅调整
+    assert len(basic_keys) >= 55, f"basic 条数异常：{len(basic_keys)}"
+
+    # 关键代表：UI 主题、关键位档数、权重代表、Hero 阈值
+    for must_have in (
+        "ui.theme",
+        "ui.refresh_ms",
+        "key_levels.r_levels",
+        "key_levels.s_levels",
+        "key_levels.max_far_count",
+        "hero.choch_alert_bars",
+        "capabilities.accumulation.weights.fair_value_slope",
+        "capabilities.breakout.weights.bos_confirm",
+        "capabilities.reversal.weights.choch_reversal",
+        "capabilities.key_level_strength.source_weights.cascade_band",
+        "trade_plan.use_segment_portrait",
+    ):
+        assert must_have in basic_keys, f"缺失 basic 标注：{must_have}"
+
+    # 专家项不应被误标：阈值、lookback 等属于 expert（默认未标 tier = expert）
+    for must_not_basic in (
+        "capabilities.accumulation.thresholds.imbalance_green_ratio",
+        "capabilities.breakout.thresholds.pierce_atr_mult",
+        "trade_plan.veto.exhaustion",
+    ):
+        tier = items.get(must_not_basic, {}).get("tier")
+        assert tier != "basic", (
+            f"{must_not_basic} 不应被标 basic（tier={tier}）"
+        )
+
+
 def test_get_config(api_client: TestClient) -> None:
     r = api_client.get("/api/config")
     assert r.status_code == 200
@@ -251,3 +290,89 @@ def test_audit_returns_records(api_client: TestClient) -> None:
     r2 = api_client.get("/api/config/audit", params={"limit": 100})
     assert r2.status_code == 200
     assert r2.json()["total"] >= 2
+
+
+# ─── V1.1 · Phase 9 · Secret mask ─────────────────────
+
+SECRET_KEY = "ai.api_key"
+
+
+def test_secret_key_is_masked_in_item(api_client: TestClient) -> None:
+    """写入 api_key 后：单项查询返回 mask 形态。"""
+    api_client.patch(
+        "/api/config",
+        json={
+            "items": {SECRET_KEY: "sk-test-abcdef1234567890"},
+            "updated_by": "test",
+        },
+    )
+    r = api_client.get(f"/api/config/item/{SECRET_KEY}")
+    assert r.status_code == 200
+    body = r.json()
+    value = body["value"]
+    override_value = body["override_value"]
+    assert isinstance(value, str) and "*" in value and "sk-" in value
+    assert isinstance(override_value, str) and "*" in override_value
+    # 全键位的原文"abcdef1234567890"不应出现在任何 mask 结果里
+    assert "abcdef1234567890" not in value
+    assert "abcdef1234567890" not in override_value
+
+
+def test_secret_key_is_masked_in_global(api_client: TestClient) -> None:
+    """全局 GET /api/config 的 values / overrides 都 mask。"""
+    api_client.patch(
+        "/api/config",
+        json={
+            "items": {SECRET_KEY: "sk-real-0011223344"},
+            "updated_by": "test",
+        },
+    )
+    body = api_client.get("/api/config").json()
+    # values 树里 ai.api_key mask
+    ai_val = body["values"]["ai"]["api_key"]
+    assert "*" in ai_val and "0011223344" not in ai_val
+    # overrides 列表里 mask
+    row = next(o for o in body["overrides"] if o["key"] == SECRET_KEY)
+    assert "*" in row["value"] and "0011223344" not in row["value"]
+
+
+def test_secret_key_is_masked_in_audit(api_client: TestClient) -> None:
+    """审计记录：old_value / new_value 都 mask。"""
+    api_client.patch(
+        "/api/config",
+        json={"items": {SECRET_KEY: "sk-old-aaaaaaaa"}, "updated_by": "test"},
+    )
+    api_client.patch(
+        "/api/config",
+        json={"items": {SECRET_KEY: "sk-new-bbbbbbbb"}, "updated_by": "test"},
+    )
+    body = api_client.get("/api/config/audit", params={"key": SECRET_KEY}).json()
+    assert body["total"] >= 2
+    for it in body["items"]:
+        for k in ("old_value", "new_value"):
+            if k in it and it[k] is not None:
+                assert "aaaaaaaa" not in str(it[k])
+                assert "bbbbbbbb" not in str(it[k])
+
+
+def test_secret_patch_rejects_masked_value(api_client: TestClient) -> None:
+    """若前端把 mask 形态（含 ****）写回来，后端要拒绝以免覆盖真 key。"""
+    api_client.patch(
+        "/api/config",
+        json={
+            "items": {SECRET_KEY: "sk-real-key-9999"},
+            "updated_by": "test",
+        },
+    )
+    r = api_client.patch(
+        "/api/config",
+        json={
+            "items": {SECRET_KEY: "sk-****9999"},  # mask 形态
+            "updated_by": "test",
+        },
+    )
+    assert r.status_code == 400
+    assert r.json()["error"]["code"] == "CONFIG_VALUE_INVALID"
+    # 真 key 不受影响（回查 mask 里仍含 "9999" 末尾）
+    body = api_client.get(f"/api/config/item/{SECRET_KEY}").json()
+    assert "9999" in body["value"]  # mask 保留末 4 位

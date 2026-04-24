@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from backend.collector.subscription_mgr import SubscriptionManager
+from backend.core.timeframes import SUPPORTED_TFS
 from backend.models import Subscription
 
 from .cache import TTLCache
@@ -86,8 +87,8 @@ async def update_subscription(
         raise HTTPException(
             status_code=501, detail="display_order 修改 V1 未实现"
         )
-    cache.invalidate(f"{s}|30m")   # 精细化可删；保险起见按 symbol 清 30m 和 1h
-    for tf in ("5m", "15m", "30m", "1h", "2h", "4h", "1d"):
+    # V1.1 · 周期单一真源：只清缓存 30m/1h/4h 三档（与 collector.timeframes 一致）
+    for tf in SUPPORTED_TFS:
         cache.invalidate(f"{s}|{tf}")
     return sub   # type: ignore[return-value]
 
@@ -100,6 +101,6 @@ async def delete_subscription(
 ) -> Response:
     s = normalize_symbol(symbol)
     await sub_mgr.remove(s)
-    for tf in ("5m", "15m", "30m", "1h", "2h", "4h", "1d"):
+    for tf in SUPPORTED_TFS:
         cache.invalidate(f"{s}|{tf}")
     return Response(status_code=204)

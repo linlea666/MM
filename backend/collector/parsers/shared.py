@@ -67,9 +67,3 @@ def parse_shared_series(
     return result
 
 
-def merge_result(dst: ParserResult, src: ParserResult) -> None:
-    for k, models in src.atoms.items():
-        if k in src.replace_scopes:
-            dst.replace(k, src.replace_scopes[k], models)
-        else:
-            dst.add(k, models)

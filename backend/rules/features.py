@@ -1,9 +1,15 @@
 """特征层：从 atoms_* 读一份 ``FeatureSnapshot``。
 
 设计取舍：
-1. **只读最近 N 根**：一次 tick 不做全表扫描，所有窗口统一用 ``lookback_bars``。
+1. **双窗口**：
+   - ``lookback_bars``（默认 120）—— "结构"窗：CVD/VWAP/POC 斜率这类"要稳"的趋势特征。
+   - ``recent_window_bars``（默认 8）—— "事件"窗：共振 / 猎杀 / imbalance 绿红占比这类
+     "要快"的短期行为。
+   两套窗口的语义差异在每个 evidence 的 note / label 里都显式标注，避免前端误读。
+   另有独立的小窗 ``exhaustion_window_bars`` / ``power_imbalance_window_bars``（默认 3），
+   对应官方"连续 3 根"硬口径。
 2. **不做重计算**：原始指标已由 HFD 算好，这里只取用。
-3. **派生字段**：提供给 scorer 的"现成事实"（最近斜率 / 绿红占比 / 最近距离 / 刚穿越等），
+3. **派生字段**：提供给 scorer 的"现成事实"（斜率 / 占比 / 距离 / 刚穿越 / 连续 streak 等），
    让 scorer 保持纯函数、无 SQL。
 4. **pydantic 模型**：运行时校验 + 可序列化（Step 4 WebSocket 要直接推前端调试）。
 
@@ -19,6 +25,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from backend.models import (
     AbsoluteZone,
+    CascadeBand,
+    ChochEvent,
+    DdToleranceSegment,
     HeatmapBand,
     HvnNode,
     Kline,
@@ -26,20 +35,171 @@ from backend.models import (
     LiquiditySweepEvent,
     MicroPocSegment,
     OrderBlock,
+    PainDrawdownSegment,
     PocShiftPoint,
     PowerImbalancePoint,
     ResonanceEvent,
+    RetailStopBand,
+    RoiSegment,
     SmartMoneySegment,
+    TimeWindowSegment,
     TrailingVwapPoint,
     TrendExhaustionPoint,
     TrendPuritySegment,
     TrendSaturationStat,
     VacuumBand,
+    VolumeProfileBucket,
     VwapPoint,
 )
 from backend.storage.db import Database
 
 logger = logging.getLogger("rules.features")
+
+
+# ════════════════════════════════════════════════════════════════════
+# V1.1 派生视图：数字化 + 白话化的指标投影（直接给前端 / AI 读）
+# ════════════════════════════════════════════════════════════════════
+
+
+class ChochLatestView(BaseModel):
+    """⚡ 机构破坏/突破事件的数字化视图。
+
+    对应官方 inst_choch 的"真金白银砸穿前高/前低"—— 用于驱动大屏 ⚡ 角标 + AI 观察。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    ts: int                 # 事件触发时间
+    price: float            # 触发价
+    level_price: float      # 被砸穿的前高/前低
+    origin_ts: int          # 该前高/前低的形成时间
+    type: str               # 原始标签：CHoCH_Bullish / CHoCH_Bearish / BOS_Bullish / BOS_Bearish
+    kind: Literal["CHoCH", "BOS"]
+    direction: Literal["bullish", "bearish"]
+    is_choch: bool
+    distance_pct: float     # (level_price - last_price) / last_price（带正负，+ = 在上方）
+    bars_since: int         # 距当前 anchor 多少根 K 线
+
+
+class BandView(BaseModel):
+    """💣 爆仓带 / 散户止损带 的统一数字化视图。
+
+    `side` 的白话口径：
+      - ``long_fuel``  —— 多头燃料（下方红带，Accumulation 语义）
+      - ``short_fuel`` —— 空头燃料（上方绿带，Distribution 语义）
+    `above_price` 独立记录价位实际相对位置（一般 long_fuel 在下、short_fuel 在上，
+    但价格异常穿越时两者可以不一致，保留原始事实供 scorer/AI 判断）。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    start_time: int
+    avg_price: float
+    top_price: float
+    bottom_price: float
+    volume: float
+    type: str               # 原始 Accumulation / Distribution
+    side: Literal["long_fuel", "short_fuel"]
+    above_price: bool       # 带是否在当前价上方
+    distance_pct: float     # (avg_price - last_price) / last_price（带正负）
+    signal_count: int | None = None     # cascade 专有（💣 强度），retail 无
+
+
+class SegmentPortrait(BaseModel):
+    """波段四维 JOIN 画像（best_effort：ROI / Pain / Time / DdTolerance 任意 1-4 维都出）。
+
+    锚点策略：
+      1. 以 Ongoing 状态 + start_time 最大 的段作为主锚点；
+      2. ROI / Pain / Time 三张表共享 (start_time, type) 主键，JOIN 同锚；
+      3. DdTolerance 主键用官方 id，关联策略：以 (status=Ongoing, end_time 最新) 的 dd 段挂靠；
+      4. 任一维度缺失，对应字段留 None，通过 ``sources`` 字段声明"哪几维有数据"。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    start_time: int | None = None
+    type: str | None = None                    # Accumulation / Distribution
+    status: str | None = None                  # Ongoing / Ended
+
+    # ROI 维度（"还能走多远"）
+    roi_avg_price: float | None = None         # 波段平均价（锚）
+    roi_limit_avg_price: float | None = None   # 平均目标价（粗虚线）
+    roi_limit_max_price: float | None = None   # 极限目标价（亮色实线）
+
+    # Pain 维度（洗盘容忍深度）
+    pain_avg_price: float | None = None        # 半透明带（洗盘容忍）
+    pain_max_price: float | None = None        # 实线极限防线
+
+    # Time 维度（时间死亡线）
+    time_avg_ts: int | None = None             # 平均寿命虚线（ms epoch）
+    time_max_ts: int | None = None             # 死亡线实线（ms epoch）
+    bars_to_avg: int | None = None             # 距离 avg 虚线还有几根（<0 已越过）
+    bars_to_max: int | None = None             # 距离死亡线还有几根（<0 已越过）
+
+    # DdTolerance 维度（移动护城河）
+    dd_limit_pct: float | None = None          # 允许的最大回撤比例
+    dd_trailing_current: float | None = None   # 当前护城河价位（trailing_line 最新一点）
+    dd_pierce_count: int = 0                   # 📌 黄色图钉刺穿次数
+
+    sources: list[Literal["roi", "pain", "time", "dd_tolerance"]] = Field(default_factory=list)
+
+
+class VolumeProfileNode(BaseModel):
+    """筹码分布单桶（价位 + 成交细节）的派生视图。
+
+    与 ``VolumeProfileBucket`` 一一对应，但保证字段命名与前端/AI 口径一致
+    （不直接 re-export atom，避免后续 atom schema 演进波及 UI）。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    price: float
+    accum: float              # 主动买量
+    dist: float               # 主动卖量
+    total: float              # 总成交量
+    dominant_side: Literal["buy", "sell", "balanced"]
+    purity_ratio: float       # abs(accum-dist)/total，越高越"纯"
+
+
+class VolumeProfileView(BaseModel):
+    """Volume Profile 的数字化视图（给前端/AI 直接读）。
+
+    关键字段：
+      - ``poc_price``：换手量最大价位（Point of Control，筹码峰的峰顶）
+      - ``value_area_low/high``：覆盖 70% 总量的价格区间（机构主力换手区）
+      - ``last_price_position``：当前价相对 VA 的位置，驱动作战判断
+      - ``top_nodes``：TopN 筹码峰（默认 5 个，按 total 降序）
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    poc_price: float
+    poc_total: float
+    value_area_low: float
+    value_area_high: float
+    value_area_volume_ratio: float       # 实际覆盖比例（接近 0.70）
+    total_volume: float
+    last_price_position: Literal["below_va", "in_va", "above_va"]
+    poc_distance_pct: float              # (poc_price - last_price) / last_price
+    top_nodes: list[VolumeProfileNode] = Field(default_factory=list)
+
+
+class TimeHeatmapView(BaseModel):
+    """资金时间热力图（24 小时活跃度）的数字化视图。
+
+    解决原 ``current_hour_activity`` 只有一个标量、无法判断"高柱/低柱时段"
+    的缺陷。Phase 9 Layer 2 用 ``peak_hours / dead_hours`` 做"主力上下班"
+    过滤，避免垃圾时间的假突破被高估。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    current_hour: int                    # 当前 UTC 小时（0-23）
+    current_activity: float              # 当前小时活跃度（相对峰值归一化 0-1）
+    current_rank: int                    # 当前小时活跃度排名（1=最高，24=最低）
+    peak_hours: list[int] = Field(default_factory=list)     # 活跃度 TopN 小时
+    dead_hours: list[int] = Field(default_factory=list)     # 活跃度 Bottom N 小时
+    is_active_session: bool              # current_activity ≥ 阈值
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -71,14 +231,29 @@ class FeatureSnapshot(BaseModel):
     trend_purity_last: TrendPuritySegment | None = None
 
     # ── 动能 / 方向 ──
-    cvd_slope: float | None = None           # (last - first)；正 = 买盘累积
+    # cvd 用结构窗 lookback_bars：趋势指标，需"稳"不需"快"。
+    cvd_slope: float | None = None           # lookback 窗口内 (last - first)；正 = 买盘累积
     cvd_slope_sign: Literal["up", "down", "flat"] = "flat"
-    imbalance_green_ratio: float = 0.0       # 近 N 根 value>0 占比
+    cvd_range: float | None = None           # lookback 窗口 max(cvd) - min(cvd)（跨币种归一化基准）
+    cvd_converge_ratio: float | None = None  # |cvd_slope| / cvd_range，越小越收敛；≈0 表示多空完全对冲
+    # imbalance 用事件窗 recent_window_bars：短期行为占比。
+    imbalance_green_ratio: float = 0.0       # 事件窗内 value>0 占比（过滤零值后）
     imbalance_red_ratio: float = 0.0
-    poc_shift_delta_pct: float | None = None  # (last_poc - first_poc) / first_poc
+    poc_shift_delta_pct: float | None = None  # lookback 窗首尾 poc 百分比变化（结构窗）
     poc_shift_trend: Literal["up", "down", "flat"] = "flat"
+
+    # power_imbalance / trend_exhaustion 官方口径都是 "近 3 根连续" 判定
+    # （docs/upstream-api/endpoints/power_imbalance.md + trend_exhaustion.md）。
+    # 所以既保留最新一条（沿用旧字段），也给出窗口序列 + streak 统计。
     power_imbalance_last: PowerImbalancePoint | None = None
+    power_imbalance_recent: list[PowerImbalancePoint] = Field(default_factory=list)
+    power_imbalance_streak: int = 0                         # 近窗从新→旧连续 |ratio|≥阈值 的根数
+    power_imbalance_streak_side: Literal["buy", "sell", "none"] = "none"
+
     trend_exhaustion_last: TrendExhaustionPoint | None = None
+    trend_exhaustion_recent: list[TrendExhaustionPoint] = Field(default_factory=list)
+    exhaustion_streak: int = 0                              # 近窗从新→旧连续 exhaustion≥阈值 的根数
+    exhaustion_streak_type: Literal["Accumulation", "Distribution", "none"] = "none"
 
     # ── 主力 / 事件 ──
     resonance_count_recent: int = 0
@@ -99,8 +274,14 @@ class FeatureSnapshot(BaseModel):
 
     # ── 饱和 / 时间 ──
     trend_saturation: TrendSaturationStat | None = None
-    current_hour_activity: float = 0.0   # time_heatmap 当前 hour 的 total/max
-    active_session: bool = False
+    current_hour_activity: float = 0.0   # time_heatmap 当前 hour 的 total/max（保留旧字段 · 向后兼容）
+    active_session: bool = False         # current_hour_activity ≥ 阈值（保留旧字段 · 向后兼容）
+
+    # ── V1.1 · Stage 0 沉睡资产激活 ──
+    # 筹码分布：POC + Value Area + TopN 峰，给 AI Layer 2 的"主力动向"喂料。
+    volume_profile: VolumeProfileView | None = None
+    # 时间热力图 24h：peak/dead 小时分布，过滤"垃圾时间"假突破。
+    time_heatmap_view: TimeHeatmapView | None = None
 
     # ── 派生：最近关键位 & 穿越 ──
     nearest_support_price: float | None = None
@@ -109,6 +290,18 @@ class FeatureSnapshot(BaseModel):
     nearest_resistance_distance_pct: float | None = None
     just_broke_resistance: bool = False
     just_broke_support: bool = False
+    pierce_atr_ratio: float | None = None   # 最近穿越幅度 / ATR（无穿越 → None）
+    pierce_recovered: bool = False          # 最近 sweep/穿越后，K 线在 liq_recover_bars 内回到带内
+
+    # ── V1.1 扩展（7 个新指标 → 数字化视图）──
+    # 事件型：⚡ 机构破坏/突破
+    choch_latest: ChochLatestView | None = None
+    choch_recent: list[ChochLatestView] = Field(default_factory=list)
+    # 价位带：💣 爆仓带 / 散户止损带（按强度 TopN 排序，TopN 由 global.band_topn 控制）
+    cascade_bands: list[BandView] = Field(default_factory=list)
+    retail_stop_bands: list[BandView] = Field(default_factory=list)
+    # 波段四维 JOIN 画像（ROI / Pain / Time / DdTolerance，best_effort）
+    segment_portrait: SegmentPortrait | None = None
 
     # ── 调试用：数据新鲜度 ──
     stale_tables: list[str] = Field(default_factory=list)  # 该 symbol/tf 缺数据的表
@@ -134,6 +327,13 @@ class FeatureExtractor:
         self._lookback = int(cfg_global.get("lookback_bars", 120))
         self._recent = int(cfg_global.get("recent_window_bars", 8))
         self._near_pct = float(cfg_global.get("near_price_pct", 0.006))
+        # 官方文档里"近 3 根"类硬口径：留成配置项，默认 3。
+        self._exhaustion_window = int(cfg_global.get("exhaustion_window_bars", 3))
+        self._power_imbalance_window = int(cfg_global.get("power_imbalance_window_bars", 3))
+        # V1.1：爆仓带 / 散户止损带 TopN（多空各取 N），默认 5 覆盖主要战场。
+        self._band_topn = int(cfg_global.get("band_topn", 5))
+        # 给 features 层暴露一份 cfg，便于读取 scorer 侧阈值（exhaustion_alert 等）
+        self._cfg = config or {}
 
     # ─────────────────────── 主入口 ───────────────────────
 
@@ -181,9 +381,25 @@ class FeatureExtractor:
         liquidation_fuel = await self._fetch_liquidation_fuel(symbol, tf)
         trend_saturation = await self._fetch_trend_saturation(symbol, tf)
         trailing_vwap_last = await self._fetch_latest_trailing_vwap(symbol, tf)
-        power_imbalance_last = await self._fetch_latest_power_imbalance(symbol, tf)
-        trend_exhaustion_last = await self._fetch_latest_trend_exhaustion(symbol, tf)
+        # power_imbalance / trend_exhaustion 按"近 N 根"窗口拉序列（ASC）
+        power_imbalance_recent = await self._fetch_recent_power_imbalance(
+            symbol, tf, self._power_imbalance_window
+        )
+        power_imbalance_last = (
+            # 保留旧语义：窗口内最近一条非零；全为 0 则 None。
+            next(
+                (p for p in reversed(power_imbalance_recent) if p.ratio != 0),
+                None,
+            )
+        )
+        trend_exhaustion_recent = await self._fetch_recent_trend_exhaustion(
+            symbol, tf, self._exhaustion_window
+        )
+        trend_exhaustion_last = (
+            trend_exhaustion_recent[-1] if trend_exhaustion_recent else None
+        )
         time_heatmap = await self._fetch_time_heatmap(symbol, tf)
+        volume_profile_buckets = await self._fetch_volume_profile(symbol, tf)
         micro_poc_last = micro_pocs[-1] if micro_pocs else None
 
         # 4) 派生
@@ -195,12 +411,22 @@ class FeatureExtractor:
 
         cvd_slope = None
         cvd_sign: Literal["up", "down", "flat"] = "flat"
+        cvd_range: float | None = None
+        cvd_converge_ratio: float | None = None
         if len(cvd_points) >= 2:
             cvd_slope = cvd_points[-1].value - cvd_points[0].value
             if cvd_slope > 0:
                 cvd_sign = "up"
             elif cvd_slope < 0:
                 cvd_sign = "down"
+            # 用窗口内 max-min 作为归一化基准，口径跨币种/跨 tf 可比。
+            # range=0 说明 cvd 完全横盘（也是收敛），此时 converge_ratio=0。
+            vals = [p.value for p in cvd_points]
+            cvd_range = max(vals) - min(vals)
+            if cvd_range > 0:
+                cvd_converge_ratio = abs(cvd_slope) / cvd_range
+            else:
+                cvd_converge_ratio = 0.0
 
         # imbalance 是稀疏事件：大部分 K 线 value=0，占比要按"非零"做分母，
         # 否则静默期被 0 稀释，判定恒为 0。
@@ -238,13 +464,41 @@ class FeatureExtractor:
         elif sell_count >= buy_count + 2:
             net_dir = "sell"
 
-        cur_hour_activity, active_session = _time_activity(time_heatmap, anchor_ts, threshold=0.5)
+        active_threshold = float(
+            self._cfg.get("participation", {})
+                     .get("active_session_threshold", 0.5)
+            if isinstance(self._cfg, dict) else 0.5
+        )
+        time_heatmap_view = _derive_time_heatmap_view(
+            time_heatmap, anchor_ts, active_threshold=active_threshold
+        )
+        # 保留旧字段口径（current_hour_activity / active_session）：多处 module/test
+        # 直接读这俩标量，暂不拆迁；新模块一律从 time_heatmap_view 取。
+        cur_hour_activity, active_session = _time_activity(
+            time_heatmap, anchor_ts, threshold=active_threshold
+        )
 
-        # 5) 最近关键位 & 刚穿越判定
+        vp_topn = int(
+            self._cfg.get("features", {})
+                     .get("volume_profile_topn", 5)
+            if isinstance(self._cfg, dict) else 5
+        )
+        va_ratio = float(
+            self._cfg.get("features", {})
+                     .get("volume_profile_va_ratio", 0.70)
+            if isinstance(self._cfg, dict) else 0.70
+        )
+        volume_profile_view = _derive_volume_profile_view(
+            volume_profile_buckets, last_price, va_ratio=va_ratio, top_n=vp_topn
+        )
+
+        # 5) 最近关键位 & 刚穿越判定 + 穿越幅度 + sweep 回收
         (
             near_s_price, near_s_dist,
             near_r_price, near_r_dist,
             broke_r, broke_s,
+            pierce_magnitude,
+            pierce_ref_level,
         ) = _nearest_levels_and_pierce(
             last_price=last_price,
             klines=klines,
@@ -253,6 +507,81 @@ class FeatureExtractor:
             absolute_zones=absolute_zones,
             order_blocks=order_blocks,
             micro_pocs=micro_pocs,
+        )
+        pierce_atr_ratio = None
+        if pierce_magnitude is not None and atr and atr > 0:
+            pierce_atr_ratio = pierce_magnitude / atr
+
+        # 6) power_imbalance 连续 N 根 streak（同向）
+        pi_extreme = float(
+            self._cfg.get("participation", {}).get("power_imbalance_extreme", 2.5)
+            if isinstance(self._cfg, dict) else 2.5
+        )
+        pi_streak, pi_side = _streak_same_side_power_imbalance(
+            power_imbalance_recent, threshold=pi_extreme
+        )
+
+        # 7) trend_exhaustion 连续 N 根 streak（同 type）
+        ex_alert = float(
+            (self._cfg.get("capabilities", {})
+                       .get("reversal", {})
+                       .get("thresholds", {})
+                       .get("exhaustion_alert", 5))
+            if isinstance(self._cfg, dict) else 5
+        )
+        ex_streak, ex_type = _streak_same_type_exhaustion(
+            trend_exhaustion_recent, threshold=ex_alert
+        )
+
+        # 8) sweep 刺穿后 liq_recover_bars 内是否回到带内
+        liq_recover_bars = int(
+            (self._cfg.get("capabilities", {})
+                       .get("reversal", {})
+                       .get("thresholds", {})
+                       .get("liq_recover_bars", 3))
+            if isinstance(self._cfg, dict) else 3
+        )
+        pierce_recovered = _pierce_recovered(
+            klines=klines,
+            sweep_last=sweep_recent[-1] if sweep_recent else None,
+            liq_recover_bars=liq_recover_bars,
+        )
+
+        # 9) V1.1 扩展：7 个新指标 → 数字化视图
+        tf_ms = _tf_to_ms(tf)
+        # 9.1 ⚡ CHoCH 事件：近窗（事件窗）
+        choch_raw = await self._fetch_choch_recent(
+            symbol, tf, anchor_ts=anchor_ts, n=self._recent, tf_ms=tf_ms
+        )
+        choch_views = [
+            _choch_to_view(ev, last_price=last_price, anchor_ts=anchor_ts, tf_ms=tf_ms)
+            for ev in choch_raw
+        ]
+        choch_latest = choch_views[-1] if choch_views else None
+
+        # 9.2 💣 爆仓带 TopN（多空各 N，按 signal_count DESC, volume DESC）
+        cascade_raw = await self._fetch_cascade_bands(symbol, tf, topn=self._band_topn)
+        cascade_views = [
+            _band_to_view(
+                b, last_price=last_price,
+                volume=b.volume, signal_count=b.signal_count,
+            )
+            for b in cascade_raw
+        ]
+
+        # 9.3 散户止损带 TopN（多空各 N，按 volume DESC —— 颜色深浅）
+        retail_raw = await self._fetch_retail_stop_bands(symbol, tf, topn=self._band_topn)
+        retail_views = [
+            _band_to_view(
+                b, last_price=last_price,
+                volume=b.volume, signal_count=None,
+            )
+            for b in retail_raw
+        ]
+
+        # 9.4 波段四维画像（ROI / Pain / Time / DdTolerance best_effort）
+        segment_portrait = await self._build_segment_portrait(
+            symbol, tf, anchor_ts=anchor_ts, tf_ms=tf_ms
         )
 
         elapsed_ms = int((time.perf_counter() - t0) * 1000)
@@ -273,12 +602,20 @@ class FeatureExtractor:
             trend_purity_last=trend_purity_last,
             cvd_slope=cvd_slope,
             cvd_slope_sign=cvd_sign,
+            cvd_range=cvd_range,
+            cvd_converge_ratio=cvd_converge_ratio,
             imbalance_green_ratio=(imb_green / imb_denom) if imb_nonzero else 0.0,
             imbalance_red_ratio=(imb_red / imb_denom) if imb_nonzero else 0.0,
             poc_shift_delta_pct=poc_delta_pct,
             poc_shift_trend=poc_trend,
             power_imbalance_last=power_imbalance_last,
+            power_imbalance_recent=power_imbalance_recent,
+            power_imbalance_streak=pi_streak,
+            power_imbalance_streak_side=pi_side,
             trend_exhaustion_last=trend_exhaustion_last,
+            trend_exhaustion_recent=trend_exhaustion_recent,
+            exhaustion_streak=ex_streak,
+            exhaustion_streak_type=ex_type,
             resonance_count_recent=len(resonance_recent),
             resonance_buy_count=buy_count,
             resonance_sell_count=sell_count,
@@ -295,12 +632,21 @@ class FeatureExtractor:
             trend_saturation=trend_saturation,
             current_hour_activity=cur_hour_activity,
             active_session=active_session,
+            volume_profile=volume_profile_view,
+            time_heatmap_view=time_heatmap_view,
             nearest_support_price=near_s_price,
             nearest_support_distance_pct=near_s_dist,
             nearest_resistance_price=near_r_price,
             nearest_resistance_distance_pct=near_r_dist,
             just_broke_resistance=broke_r,
             just_broke_support=broke_s,
+            pierce_atr_ratio=pierce_atr_ratio,
+            pierce_recovered=pierce_recovered,
+            choch_latest=choch_latest,
+            choch_recent=choch_views,
+            cascade_bands=cascade_views,
+            retail_stop_bands=retail_views,
+            segment_portrait=segment_portrait,
             stale_tables=stale,
             generated_at=anchor_ts,
         )
@@ -479,28 +825,31 @@ class FeatureExtractor:
         )
         return TrailingVwapPoint(**dict(row)) if row else None
 
-    async def _fetch_latest_power_imbalance(
-        self, symbol: str, tf: str
-    ) -> PowerImbalancePoint | None:
-        # 大部分 K 线 ratio=0；取最近一个 **非零** 的
-        row = await self._db.fetchone(
+    async def _fetch_recent_power_imbalance(
+        self, symbol: str, tf: str, n: int
+    ) -> list[PowerImbalancePoint]:
+        """取最近 N 根 power_imbalance（含 ratio=0，ASC）。
+
+        为什么不过滤 0：官方口径「连续 3 根 ratio≥阈值」要按真实时间相邻关系判定，
+        过滤 0 会把非连续的事件误认为连续。
+        """
+        rows = await self._db.fetchall(
             "SELECT symbol, tf, ts, buy_vol, sell_vol, ratio "
             "FROM atoms_power_imbalance "
-            "WHERE symbol=? AND tf=? AND ratio != 0 "
-            "ORDER BY ts DESC LIMIT 1",
-            (symbol, tf),
+            "WHERE symbol=? AND tf=? ORDER BY ts DESC LIMIT ?",
+            (symbol, tf, n),
         )
-        return PowerImbalancePoint(**dict(row)) if row else None
+        return [PowerImbalancePoint(**dict(r)) for r in reversed(rows)]
 
-    async def _fetch_latest_trend_exhaustion(
-        self, symbol: str, tf: str
-    ) -> TrendExhaustionPoint | None:
-        row = await self._db.fetchone(
+    async def _fetch_recent_trend_exhaustion(
+        self, symbol: str, tf: str, n: int
+    ) -> list[TrendExhaustionPoint]:
+        rows = await self._db.fetchall(
             "SELECT symbol, tf, ts, exhaustion, type FROM atoms_trend_exhaustion "
-            "WHERE symbol=? AND tf=? ORDER BY ts DESC LIMIT 1",
-            (symbol, tf),
+            "WHERE symbol=? AND tf=? ORDER BY ts DESC LIMIT ?",
+            (symbol, tf, n),
         )
-        return TrendExhaustionPoint(**dict(row)) if row else None
+        return [TrendExhaustionPoint(**dict(r)) for r in reversed(rows)]
 
     async def _fetch_time_heatmap(self, symbol: str, tf: str) -> dict[int, float]:
         rows = await self._db.fetchall(
@@ -508,6 +857,224 @@ class FeatureExtractor:
             (symbol, tf),
         )
         return {int(r["hour"]): float(r["total"]) for r in rows}
+
+    async def _fetch_volume_profile(
+        self, symbol: str, tf: str
+    ) -> list[VolumeProfileBucket]:
+        """筹码分布所有桶（按价格 ASC，便于 VA 扩展算法线性扫描）。"""
+        rows = await self._db.fetchall(
+            "SELECT symbol, tf, price, accum, dist, total "
+            "FROM atoms_volume_profile WHERE symbol=? AND tf=? ORDER BY price ASC",
+            (symbol, tf),
+        )
+        return [VolumeProfileBucket(**dict(r)) for r in rows]
+
+    # ─────────────────────── V1.1 取数 ───────────────────────
+
+    async def _fetch_choch_recent(
+        self, symbol: str, tf: str, *, anchor_ts: int, n: int, tf_ms: int
+    ) -> list[ChochEvent]:
+        """近窗内的 CHoCH/BOS 事件（ASC）。
+
+        窗口边界与 resonance/sweep 保持一致：``[anchor_ts - n*tf_ms, anchor_ts]``，
+        便于 scorer/AI 做"此刻发生了什么"的即时观察。
+        """
+        start_ts = anchor_ts - (n * tf_ms)
+        rows = await self._db.fetchall(
+            "SELECT symbol, tf, ts, price, level_price, origin_ts, type "
+            "FROM atoms_choch_events "
+            "WHERE symbol=? AND tf=? AND ts >= ? ORDER BY ts ASC",
+            (symbol, tf, start_ts),
+        )
+        return [ChochEvent(**dict(r)) for r in rows]
+
+    async def _fetch_cascade_bands(
+        self, symbol: str, tf: str, *, topn: int
+    ) -> list[CascadeBand]:
+        """💣 爆仓带 TopN（多空各 N）。
+
+        排序：先 signal_count DESC（💣 强度），次 volume DESC（资金量）。
+        UNION 写法避免 Python 侧二次排序，SQL 单次回表即可。
+        """
+        if topn <= 0:
+            return []
+        rows = await self._db.fetchall(
+            "SELECT * FROM (\n"
+            "  SELECT symbol, tf, start_time, bottom_price, top_price, avg_price, "
+            "         volume, signal_count, type FROM atoms_cascade_bands "
+            "  WHERE symbol=? AND tf=? AND type='Accumulation' "
+            "  ORDER BY signal_count DESC, volume DESC LIMIT ?\n"
+            ") UNION ALL SELECT * FROM (\n"
+            "  SELECT symbol, tf, start_time, bottom_price, top_price, avg_price, "
+            "         volume, signal_count, type FROM atoms_cascade_bands "
+            "  WHERE symbol=? AND tf=? AND type='Distribution' "
+            "  ORDER BY signal_count DESC, volume DESC LIMIT ?\n"
+            ")",
+            (symbol, tf, topn, symbol, tf, topn),
+        )
+        return [CascadeBand(**dict(r)) for r in rows]
+
+    async def _fetch_retail_stop_bands(
+        self, symbol: str, tf: str, *, topn: int
+    ) -> list[RetailStopBand]:
+        """散户止损带 TopN（多空各 N，按 volume DESC —— 带颜色越深越肥）。"""
+        if topn <= 0:
+            return []
+        rows = await self._db.fetchall(
+            "SELECT * FROM (\n"
+            "  SELECT symbol, tf, start_time, bottom_price, top_price, avg_price, "
+            "         volume, type FROM atoms_retail_stop_bands "
+            "  WHERE symbol=? AND tf=? AND type='Accumulation' "
+            "  ORDER BY volume DESC LIMIT ?\n"
+            ") UNION ALL SELECT * FROM (\n"
+            "  SELECT symbol, tf, start_time, bottom_price, top_price, avg_price, "
+            "         volume, type FROM atoms_retail_stop_bands "
+            "  WHERE symbol=? AND tf=? AND type='Distribution' "
+            "  ORDER BY volume DESC LIMIT ?\n"
+            ")",
+            (symbol, tf, topn, symbol, tf, topn),
+        )
+        return [RetailStopBand(**dict(r)) for r in rows]
+
+    async def _fetch_latest_roi(
+        self, symbol: str, tf: str
+    ) -> RoiSegment | None:
+        """锚点用：优先 Ongoing，fallback 到 start_time 最大。"""
+        row = await self._db.fetchone(
+            "SELECT symbol, tf, start_time, end_time, avg_price, "
+            "       limit_avg_price, limit_max_price, type, status "
+            "FROM atoms_roi_segments WHERE symbol=? AND tf=? "
+            "ORDER BY (status='Ongoing') DESC, start_time DESC LIMIT 1",
+            (symbol, tf),
+        )
+        return RoiSegment(**dict(row)) if row else None
+
+    async def _fetch_roi_by_key(
+        self, symbol: str, tf: str, start_time: int, type_: str
+    ) -> RoiSegment | None:
+        row = await self._db.fetchone(
+            "SELECT symbol, tf, start_time, end_time, avg_price, "
+            "       limit_avg_price, limit_max_price, type, status "
+            "FROM atoms_roi_segments WHERE symbol=? AND tf=? "
+            "AND start_time=? AND type=?",
+            (symbol, tf, start_time, type_),
+        )
+        return RoiSegment(**dict(row)) if row else None
+
+    async def _fetch_pain_by_key(
+        self, symbol: str, tf: str, start_time: int, type_: str
+    ) -> PainDrawdownSegment | None:
+        row = await self._db.fetchone(
+            "SELECT symbol, tf, start_time, end_time, avg_price, "
+            "       pain_avg_price, pain_max_price, type, status "
+            "FROM atoms_pain_drawdown_segments WHERE symbol=? AND tf=? "
+            "AND start_time=? AND type=?",
+            (symbol, tf, start_time, type_),
+        )
+        return PainDrawdownSegment(**dict(row)) if row else None
+
+    async def _fetch_time_by_key(
+        self, symbol: str, tf: str, start_time: int, type_: str
+    ) -> TimeWindowSegment | None:
+        row = await self._db.fetchone(
+            "SELECT symbol, tf, start_time, end_time, last_update_time, avg_price, "
+            "       limit_avg_time, limit_max_time, type, status "
+            "FROM atoms_time_windows WHERE symbol=? AND tf=? "
+            "AND start_time=? AND type=?",
+            (symbol, tf, start_time, type_),
+        )
+        return TimeWindowSegment(**dict(row)) if row else None
+
+    async def _fetch_latest_dd_tolerance(
+        self, symbol: str, tf: str
+    ) -> DdToleranceSegment | None:
+        """dd_tolerance 主键用官方 id，与 ROI 主键不同；用 status+end_time 作为"最新段"。"""
+        row = await self._db.fetchone(
+            "SELECT symbol, tf, id, start_time, end_time, limit_pct, status, "
+            "       trailing_line, pierces "
+            "FROM atoms_dd_tolerance_segments WHERE symbol=? AND tf=? "
+            "ORDER BY (status='Ongoing') DESC, end_time DESC LIMIT 1",
+            (symbol, tf),
+        )
+        if not row:
+            return None
+        import json as _json
+
+        d = dict(row)
+        d["trailing_line"] = _json.loads(d.get("trailing_line") or "[]")
+        d["pierces"] = _json.loads(d.get("pierces") or "[]")
+        return DdToleranceSegment(**d)
+
+    async def _build_segment_portrait(
+        self, symbol: str, tf: str, *, anchor_ts: int, tf_ms: int
+    ) -> SegmentPortrait | None:
+        """波段四维 best_effort 画像。
+
+        设计原则：
+          - 以 ROI 为锚（Ongoing 优先），其他三维按 (start_time, type) JOIN；
+          - ROI / Pain / Time 共享主键，可以精确 JOIN；
+          - DdTolerance 主键不同，以"最新 Ongoing 段"挂靠；
+          - 任一维缺失字段留 None，``sources`` 汇报实际到手的维度；
+          - 4 个维度全空 → 返回 None（避免空壳）。
+        """
+        sources: list[str] = []
+
+        roi = await self._fetch_latest_roi(symbol, tf)
+        pain = None
+        time_seg = None
+        if roi is not None:
+            sources.append("roi")
+            pain = await self._fetch_pain_by_key(symbol, tf, roi.start_time, roi.type)
+            time_seg = await self._fetch_time_by_key(symbol, tf, roi.start_time, roi.type)
+            if pain is not None:
+                sources.append("pain")
+            if time_seg is not None:
+                sources.append("time")
+
+        dd = await self._fetch_latest_dd_tolerance(symbol, tf)
+        if dd is not None:
+            sources.append("dd_tolerance")
+
+        if not sources:
+            return None
+
+        # Time 维度的距离换算：当前 anchor_ts 到 avg/max 还有几根 K 线。
+        bars_to_avg: int | None = None
+        bars_to_max: int | None = None
+        if time_seg is not None and tf_ms > 0:
+            bars_to_avg = (time_seg.limit_avg_time - anchor_ts) // tf_ms
+            bars_to_max = (time_seg.limit_max_time - anchor_ts) // tf_ms
+
+        # DdTolerance 护城河当前位 = trailing_line 最新一点的 price（[ts, price]）
+        dd_current: float | None = None
+        dd_pierces_ct = 0
+        if dd is not None:
+            tl = dd.trailing_line or []
+            if tl:
+                # 选 ts 最大的那条；trailing_line 元素形如 [ts, price]。
+                latest = max(tl, key=lambda p: p[0] if len(p) >= 2 else 0)
+                if len(latest) >= 2:
+                    dd_current = float(latest[1])
+            dd_pierces_ct = len(dd.pierces or [])
+
+        return SegmentPortrait(
+            start_time=roi.start_time if roi else None,
+            type=roi.type if roi else None,
+            status=roi.status if roi else None,
+            roi_avg_price=roi.avg_price if roi else None,
+            roi_limit_avg_price=roi.limit_avg_price if roi else None,
+            roi_limit_max_price=roi.limit_max_price if roi else None,
+            pain_avg_price=pain.pain_avg_price if pain else None,
+            pain_max_price=pain.pain_max_price if pain else None,
+            time_avg_ts=time_seg.limit_avg_time if time_seg else None,
+            time_max_ts=time_seg.limit_max_time if time_seg else None,
+            bars_to_avg=bars_to_avg,
+            bars_to_max=bars_to_max,
+            dd_limit_pct=dd.limit_pct if dd else None,
+            dd_trailing_current=dd_current,
+            dd_pierce_count=dd_pierces_ct,
+            sources=sources,  # type: ignore[arg-type]
+        )
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -583,6 +1150,144 @@ def _time_activity(
     return cur, cur >= threshold
 
 
+def _derive_time_heatmap_view(
+    heatmap: dict[int, float],
+    anchor_ts: int,
+    *,
+    active_threshold: float = 0.5,
+    peak_n: int = 3,
+    dead_n: int = 2,
+) -> TimeHeatmapView | None:
+    """把 24h 热力图派生成给前端/AI 读的视图。
+
+    - ``peak_hours`` / ``dead_hours`` 都按 total 排序后取 TopN / BottomN；
+    - ``current_rank`` 按 total DESC 排名（1 = 最活跃），缺当前小时时取 24；
+    - heatmap 为空时返回 None（上层判断并降级）。
+    """
+    if not heatmap:
+        return None
+    import datetime as _dt
+
+    hour = _dt.datetime.fromtimestamp(anchor_ts / 1000, tz=_dt.UTC).hour
+    mx = max(heatmap.values()) or 1.0
+    current_activity = heatmap.get(hour, 0.0) / mx
+
+    # 按活跃度降序 → 排名 / peak / dead
+    sorted_desc = sorted(heatmap.items(), key=lambda kv: kv[1], reverse=True)
+    peak_hours = [h for h, _ in sorted_desc[:peak_n]]
+    dead_hours = [h for h, _ in sorted_desc[-dead_n:][::-1]]  # 反转：最"冷"在前
+
+    rank = 24
+    for idx, (h, _) in enumerate(sorted_desc, start=1):
+        if h == hour:
+            rank = idx
+            break
+
+    return TimeHeatmapView(
+        current_hour=hour,
+        current_activity=current_activity,
+        current_rank=rank,
+        peak_hours=peak_hours,
+        dead_hours=dead_hours,
+        is_active_session=current_activity >= active_threshold,
+    )
+
+
+def _derive_volume_profile_view(
+    buckets: list[VolumeProfileBucket],
+    last_price: float,
+    *,
+    va_ratio: float = 0.70,
+    top_n: int = 5,
+) -> VolumeProfileView | None:
+    """把筹码分布桶派生成前端/AI 可读的视图。
+
+    Value Area 算法（经典 70% VA）：从 POC 开始双向扩展，每步选择
+    两侧加一桶中"能覆盖更多成交量"的一侧，直至累计覆盖 ``va_ratio``。
+    """
+    if not buckets:
+        return None
+    total = sum(b.total for b in buckets)
+    if total <= 0:
+        return None
+
+    by_price = sorted(buckets, key=lambda b: b.price)
+    prices = [b.price for b in by_price]
+    totals = [b.total for b in by_price]
+    n = len(by_price)
+
+    # 找 POC：total 最大
+    poc_idx = max(range(n), key=lambda i: totals[i])
+    poc_bucket = by_price[poc_idx]
+
+    # 70% VA：从 POC 双向扩展
+    low_idx = poc_idx
+    high_idx = poc_idx
+    accumulated = totals[poc_idx]
+    target = total * va_ratio
+    while accumulated < target and (low_idx > 0 or high_idx < n - 1):
+        left = totals[low_idx - 1] if low_idx > 0 else -1.0
+        right = totals[high_idx + 1] if high_idx < n - 1 else -1.0
+        if left < 0 and right < 0:
+            break
+        if left >= right:
+            low_idx -= 1
+            accumulated += totals[low_idx]
+        else:
+            high_idx += 1
+            accumulated += totals[high_idx]
+
+    va_low = prices[low_idx]
+    va_high = prices[high_idx]
+
+    if last_price < va_low:
+        position: Literal["below_va", "in_va", "above_va"] = "below_va"
+    elif last_price > va_high:
+        position = "above_va"
+    else:
+        position = "in_va"
+
+    # TopN 筹码峰（按 total DESC）
+    sorted_by_total = sorted(by_price, key=lambda b: b.total, reverse=True)
+    top_nodes: list[VolumeProfileNode] = []
+    for b in sorted_by_total[: max(0, top_n)]:
+        if b.total <= 0:
+            continue
+        if b.accum > b.dist:
+            side: Literal["buy", "sell", "balanced"] = "buy"
+        elif b.dist > b.accum:
+            side = "sell"
+        else:
+            side = "balanced"
+        purity = abs(b.accum - b.dist) / b.total if b.total > 0 else 0.0
+        top_nodes.append(
+            VolumeProfileNode(
+                price=b.price,
+                accum=b.accum,
+                dist=b.dist,
+                total=b.total,
+                dominant_side=side,
+                purity_ratio=purity,
+            )
+        )
+
+    poc_distance_pct = 0.0
+    if last_price > 0:
+        poc_distance_pct = (poc_bucket.price - last_price) / last_price
+
+    return VolumeProfileView(
+        poc_price=poc_bucket.price,
+        poc_total=poc_bucket.total,
+        value_area_low=va_low,
+        value_area_high=va_high,
+        value_area_volume_ratio=accumulated / total if total > 0 else 0.0,
+        total_volume=total,
+        last_price_position=position,
+        poc_distance_pct=poc_distance_pct,
+        top_nodes=top_nodes,
+    )
+
+
 def _nearest_levels_and_pierce(
     *,
     last_price: float,
@@ -592,8 +1297,17 @@ def _nearest_levels_and_pierce(
     absolute_zones: list[AbsoluteZone],
     order_blocks: list[OrderBlock],
     micro_pocs: list[MicroPocSegment],
-) -> tuple[float | None, float | None, float | None, float | None, bool, bool]:
-    """汇总候选价位 → 找上下最近一档 → 判断最近 N 根是否刚穿越。"""
+) -> tuple[
+    float | None, float | None,          # nearest support price / distance
+    float | None, float | None,          # nearest resistance price / distance
+    bool, bool,                           # just_broke_resistance / support
+    float | None, float | None,          # pierce_magnitude / pierce_ref_level
+]:
+    """汇总候选价位 → 找上下最近一档 → 判断最近 N 根是否刚穿越。
+
+    额外返回穿越幅度（max(|cur.close - level|) over pierced levels）+ 参考价位，
+    供 scorer 结合 ATR 判断"真突破 / 擦线"。
+    """
     candidates: list[float] = []
     for h in hvn_nodes:
         candidates.append(h.price)
@@ -616,22 +1330,182 @@ def _nearest_levels_and_pierce(
     # 穿越检测：遍历 **所有候选价位**（不按当前分类过滤），
     # 因为一个被刚刚从下向上穿越的价位，即使当前已变 support，依然应该
     # 触发 "just broke resistance"（反之亦然）。
+    # 用单一窗口 + 相邻配对，保证 len(klines) < recent_window 时仍得到正确的连续 (prev, cur) 对。
     broke_r = False
     broke_s = False
-    if len(klines) >= 2 and candidates:
-        for prev, cur in zip(klines[-recent_window:-1], klines[-recent_window + 1:]):
+    pierce_magnitude: float | None = None
+    pierce_level: float | None = None
+    window = klines[-recent_window:] if recent_window > 0 else klines
+    if len(window) >= 2 and candidates:
+        for prev, cur in zip(window, window[1:]):
             for level in candidates:
                 if prev.close < level <= cur.close:
                     broke_r = True
+                    mag = cur.close - level
+                    if pierce_magnitude is None or mag > pierce_magnitude:
+                        pierce_magnitude = mag
+                        pierce_level = level
                 if prev.close > level >= cur.close:
                     broke_s = True
-            if broke_r and broke_s:
-                break
+                    mag = level - cur.close
+                    if pierce_magnitude is None or mag > pierce_magnitude:
+                        pierce_magnitude = mag
+                        pierce_level = level
 
-    return (nearest_s, near_s_dist, nearest_r, near_r_dist, broke_r, broke_s)
+    return (
+        nearest_s, near_s_dist,
+        nearest_r, near_r_dist,
+        broke_r, broke_s,
+        pierce_magnitude, pierce_level,
+    )
+
+
+def _streak_same_side_power_imbalance(
+    points: list[PowerImbalancePoint], *, threshold: float
+) -> tuple[int, Literal["buy", "sell", "none"]]:
+    """从最新一根往前数，连续 |ratio|≥threshold 且 **同侧**（buy_vol/sell_vol）的根数。"""
+    if not points:
+        return 0, "none"
+    streak = 0
+    side: Literal["buy", "sell", "none"] = "none"
+    for p in reversed(points):
+        cur_side: Literal["buy", "sell", "none"]
+        if abs(p.ratio) < threshold:
+            break
+        cur_side = "buy" if p.buy_vol > p.sell_vol else "sell" if p.sell_vol > p.buy_vol else "none"
+        if cur_side == "none":
+            break
+        if side == "none":
+            side = cur_side
+        elif cur_side != side:
+            break
+        streak += 1
+    return streak, side
+
+
+def _streak_same_type_exhaustion(
+    points: list[TrendExhaustionPoint], *, threshold: float
+) -> tuple[int, Literal["Accumulation", "Distribution", "none"]]:
+    """从最新一根往前数，连续 exhaustion≥threshold 且 type 相同的根数。"""
+    if not points:
+        return 0, "none"
+    streak = 0
+    ty: Literal["Accumulation", "Distribution", "none"] = "none"
+    for p in reversed(points):
+        if p.exhaustion < threshold:
+            break
+        cur: Literal["Accumulation", "Distribution", "none"]
+        t_lower = p.type.lower()
+        if t_lower.startswith("accum"):
+            cur = "Accumulation"
+        elif t_lower.startswith("dist"):
+            cur = "Distribution"
+        else:
+            break
+        if ty == "none":
+            ty = cur
+        elif cur != ty:
+            break
+        streak += 1
+    return streak, ty
+
+
+def _choch_to_view(
+    ev: ChochEvent, *, last_price: float, anchor_ts: int, tf_ms: int
+) -> ChochLatestView:
+    """把原子 ``ChochEvent`` 投影成数字化视图。
+
+    - distance_pct 用 level_price（被砸穿的防线）与当前价的相对位置：
+      正值表示防线仍在上方（当前是 BOS_Bullish 刚突破 / CHoCH_Bullish 刚反转后回踩中）。
+    - bars_since 保守下限 0（极端时 ev.ts > anchor_ts 可能出现 clock skew）。
+    """
+    t = ev.type
+    is_bullish = t.endswith("Bullish")
+    kind: Literal["CHoCH", "BOS"] = "CHoCH" if t.startswith("CHoCH") else "BOS"
+    dist = (ev.level_price - last_price) / last_price if last_price > 0 else 0.0
+    bars = (anchor_ts - ev.ts) // tf_ms if tf_ms > 0 else 0
+    if bars < 0:
+        bars = 0
+    return ChochLatestView(
+        ts=ev.ts,
+        price=ev.price,
+        level_price=ev.level_price,
+        origin_ts=ev.origin_ts,
+        type=t,
+        kind=kind,
+        direction="bullish" if is_bullish else "bearish",
+        is_choch=t.startswith("CHoCH"),
+        distance_pct=dist,
+        bars_since=int(bars),
+    )
+
+
+def _band_to_view(
+    band: CascadeBand | RetailStopBand,
+    *,
+    last_price: float,
+    volume: float,
+    signal_count: int | None,
+) -> BandView:
+    """把 Cascade / RetailStop 原子投影成统一数字化视图。
+
+    side 映射口径（白话化）：
+      - ``type == Accumulation`` → ``long_fuel``（下方红带：多头燃料 / 多头被爆仓）
+      - ``type == Distribution`` → ``short_fuel``（上方绿带：空头燃料 / 空头被爆仓）
+    ``above_price`` 独立记录价位实际位置（应对价格已穿越带的异常情况）。
+    """
+    side: Literal["long_fuel", "short_fuel"] = (
+        "long_fuel" if band.type == "Accumulation" else "short_fuel"
+    )
+    above = band.avg_price > last_price
+    dist = (band.avg_price - last_price) / last_price if last_price > 0 else 0.0
+    return BandView(
+        start_time=band.start_time,
+        avg_price=band.avg_price,
+        top_price=band.top_price,
+        bottom_price=band.bottom_price,
+        volume=volume,
+        type=band.type,
+        side=side,
+        above_price=above,
+        distance_pct=dist,
+        signal_count=signal_count,
+    )
+
+
+def _pierce_recovered(
+    *,
+    klines: list[Kline],
+    sweep_last: LiquiditySweepEvent | None,
+    liq_recover_bars: int,
+) -> bool:
+    """sweep 的针尖价位是否在 liq_recover_bars 根内被价格回收。
+
+    - bullish_sweep（下刺）：随后 N 根内收盘价 ≥ sweep.price 即算回收。
+    - bearish_sweep（上刺）：随后 N 根内收盘价 ≤ sweep.price 即算回收。
+    """
+    if sweep_last is None or liq_recover_bars <= 0 or not klines:
+        return False
+    # 找到 sweep 对应的 K 线（ts 最接近且 ≤ sweep.ts）
+    anchor_idx: int | None = None
+    for i in range(len(klines) - 1, -1, -1):
+        if klines[i].ts <= sweep_last.ts:
+            anchor_idx = i
+            break
+    if anchor_idx is None:
+        return False
+    end_idx = min(len(klines) - 1, anchor_idx + liq_recover_bars)
+    if sweep_last.type == "bullish_sweep":
+        return any(k.close >= sweep_last.price for k in klines[anchor_idx + 1 : end_idx + 1])
+    if sweep_last.type == "bearish_sweep":
+        return any(k.close <= sweep_last.price for k in klines[anchor_idx + 1 : end_idx + 1])
+    return False
 
 
 __all__ = [
+    "BandView",
+    "ChochLatestView",
     "FeatureExtractor",
     "FeatureSnapshot",
+    "SegmentPortrait",
 ]

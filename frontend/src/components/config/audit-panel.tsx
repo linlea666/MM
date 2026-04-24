@@ -14,6 +14,11 @@ interface Props {
   keyFilter?: string;
 }
 
+// V1.1 · Phase 9：识别后端 mask 形态（含 3 个以上 ``*``）
+function isMasked(v: unknown): boolean {
+  return typeof v === "string" && (v.match(/\*/g)?.length ?? 0) >= 3;
+}
+
 export function AuditPanel({ keyFilter }: Props) {
   const q = useQuery({
     queryKey: ["config-audit", keyFilter ?? ""],
@@ -109,6 +114,14 @@ export function AuditPanel({ keyFilter }: Props) {
                             ? "(重置为默认)"
                             : formatConfigValue(r.new_value)}
                         </span>
+                        {isMasked(r.old_value) || isMasked(r.new_value) ? (
+                          <span
+                            className="ml-1 rounded border border-border/40 px-1 py-0.5 text-[9px] uppercase tracking-widest text-muted-foreground"
+                            title="敏感字段已脱敏显示"
+                          >
+                            secret
+                          </span>
+                        ) : null}
                       </div>
                     </td>
                     <td className="px-3 py-2 text-xs text-muted-foreground">

@@ -48,7 +48,7 @@ def score_accumulation(
                 weight=w, hit=hit, ratio=r,
                 value=round(fv_slope * 100, 3),
                 threshold=slope_eps,
-                note="近 N 根 vwap 百分比斜率",
+                note="结构窗 lookback_bars 内 vwap 百分比斜率",
             )
         )
 

@@ -60,14 +60,29 @@ class CircuitBreaker:
             st.opened_at = 0.0
 
     def record_failure(self, service: str, key: str, *, reason: str = "") -> bool:
-        """返回是否新触发熔断。"""
+        """返回是否新触发熔断。
+
+        状态机：
+        - closed（opened_at == 0）：累计 threshold 次失败即首次熔断。
+        - open（opened_at != 0，cooldown 未过）：仅累加失败计数，不重复触发。
+        - half-open（opened_at != 0，cooldown 已过）：半开期探测到的失败立即再次熔断，
+          保证长期故障下保护不会失效（修复了早期"冷却一次后失守"的问题）。
+        """
         with self._lock:
             st = self.states.setdefault((service, key), _State())
             st.failures += 1
             st.last_trigger_ts = time.time()
+            now = time.monotonic()
+            cooldown_elapsed = (
+                st.opened_at > 0 and now - st.opened_at >= self.cooldown_seconds
+            )
             just_tripped = False
-            if st.failures >= self.threshold and st.opened_at == 0:
-                st.opened_at = time.monotonic()
+            if st.opened_at == 0 and st.failures >= self.threshold:
+                st.opened_at = now
+                just_tripped = True
+            elif cooldown_elapsed:
+                # half-open 期首次失败：立即再次熔断并启动新一轮冷却。
+                st.opened_at = now
                 just_tripped = True
         if just_tripped:
             logger.error(
@@ -85,13 +100,19 @@ class CircuitBreaker:
         return just_tripped
 
     def snapshot(self) -> list[dict]:
+        # open 口径与 is_open 一致（只在 cooldown 未过时才算 open），
+        # 避免快照里显示"永远 open"导致运维误判。
+        now = time.monotonic()
         with self._lock:
             return [
                 {
                     "service": svc,
                     "key": key,
                     "failures": st.failures,
-                    "open": st.opened_at > 0,
+                    "open": (
+                        st.opened_at > 0
+                        and now - st.opened_at < self.cooldown_seconds
+                    ),
                     "last_trigger_ts": st.last_trigger_ts,
                 }
                 for (svc, key), st in self.states.items()

@@ -112,7 +112,7 @@ CREATE TABLE IF NOT EXISTS atoms_trend_exhaustion (
     symbol     TEXT NOT NULL,
     tf         TEXT NOT NULL,
     ts         INTEGER NOT NULL,
-    exhaustion INTEGER NOT NULL,
+    exhaustion REAL NOT NULL,                  -- 上游返回 number，可带小数
     type       TEXT NOT NULL,                  -- Accumulation/Distribution
     PRIMARY KEY (symbol, tf, ts)
 );
@@ -124,7 +124,7 @@ CREATE TABLE IF NOT EXISTS atoms_smart_money (
     symbol     TEXT NOT NULL,
     tf         TEXT NOT NULL,
     start_time INTEGER NOT NULL,
-    end_time   INTEGER NOT NULL,
+    end_time   INTEGER,                        -- Ongoing 段上游可能为 NULL
     avg_price  REAL NOT NULL,
     type       TEXT NOT NULL,
     status     TEXT NOT NULL,                  -- Ongoing/Completed
@@ -273,6 +273,106 @@ CREATE TABLE IF NOT EXISTS atoms_trend_saturation (
     PRIMARY KEY (symbol, tf)
 );
 
+-- ────────────────────────────────────────────────────────────────────
+-- 四-B、V1.1 扩展原子（7 张，与 V1 架构正交）
+-- ────────────────────────────────────────────────────────────────────
+
+-- 6.1 机构 CHoCH/BOS 事件
+CREATE TABLE IF NOT EXISTS atoms_choch_events (
+    symbol      TEXT NOT NULL,
+    tf          TEXT NOT NULL,
+    ts          INTEGER NOT NULL,
+    price       REAL NOT NULL,
+    level_price REAL NOT NULL,
+    origin_ts   INTEGER NOT NULL,
+    type        TEXT NOT NULL,         -- CHoCH_Bullish/Bearish | BOS_Bullish/Bearish
+    PRIMARY KEY (symbol, tf, ts, type, level_price)
+);
+
+-- 6.2 未来收益预期（段式）
+CREATE TABLE IF NOT EXISTS atoms_roi_segments (
+    symbol          TEXT NOT NULL,
+    tf              TEXT NOT NULL,
+    start_time      INTEGER NOT NULL,
+    end_time        INTEGER NOT NULL,
+    avg_price       REAL NOT NULL,
+    limit_avg_price REAL NOT NULL,
+    limit_max_price REAL NOT NULL,
+    type            TEXT NOT NULL,
+    status          TEXT NOT NULL,
+    PRIMARY KEY (symbol, tf, start_time, type)
+);
+
+-- 6.3 极限洗盘深度（段式）
+CREATE TABLE IF NOT EXISTS atoms_pain_drawdown_segments (
+    symbol          TEXT NOT NULL,
+    tf              TEXT NOT NULL,
+    start_time      INTEGER NOT NULL,
+    end_time        INTEGER NOT NULL,
+    avg_price       REAL NOT NULL,
+    pain_avg_price  REAL NOT NULL,
+    pain_max_price  REAL NOT NULL,
+    type            TEXT NOT NULL,
+    status          TEXT NOT NULL,
+    PRIMARY KEY (symbol, tf, start_time, type)
+);
+
+-- 6.4 趋势时间极限（段式）
+CREATE TABLE IF NOT EXISTS atoms_time_windows (
+    symbol           TEXT NOT NULL,
+    tf               TEXT NOT NULL,
+    start_time       INTEGER NOT NULL,
+    end_time         INTEGER NOT NULL,
+    last_update_time INTEGER NOT NULL,
+    avg_price        REAL NOT NULL,
+    limit_avg_time   INTEGER NOT NULL,
+    limit_max_time   INTEGER NOT NULL,
+    type             TEXT NOT NULL,
+    status           TEXT NOT NULL,
+    PRIMARY KEY (symbol, tf, start_time, type)
+);
+
+-- 6.5 涨跌极限 / 移动护城河（段式 + JSON 时序）
+CREATE TABLE IF NOT EXISTS atoms_dd_tolerance_segments (
+    symbol        TEXT NOT NULL,
+    tf            TEXT NOT NULL,
+    id            INTEGER NOT NULL,       -- 官方段 ID
+    start_time    INTEGER NOT NULL,
+    end_time      INTEGER NOT NULL,
+    limit_pct     REAL NOT NULL,
+    status        TEXT NOT NULL,
+    trailing_line TEXT NOT NULL,          -- JSON: [[ts, price], ...]
+    pierces       TEXT NOT NULL,          -- JSON: [[ts, price], ...]
+    PRIMARY KEY (symbol, tf, id)
+);
+
+-- 6.6 连环爆仓区（价位带）
+CREATE TABLE IF NOT EXISTS atoms_cascade_bands (
+    symbol       TEXT NOT NULL,
+    tf           TEXT NOT NULL,
+    start_time   INTEGER NOT NULL,
+    bottom_price REAL NOT NULL,
+    top_price    REAL NOT NULL,
+    avg_price    REAL NOT NULL,
+    volume       REAL NOT NULL,
+    signal_count INTEGER NOT NULL,
+    type         TEXT NOT NULL,
+    PRIMARY KEY (symbol, tf, start_time, type, avg_price)
+);
+
+-- 6.7 散户止损点（价位带）
+CREATE TABLE IF NOT EXISTS atoms_retail_stop_bands (
+    symbol       TEXT NOT NULL,
+    tf           TEXT NOT NULL,
+    start_time   INTEGER NOT NULL,
+    bottom_price REAL NOT NULL,
+    top_price    REAL NOT NULL,
+    avg_price    REAL NOT NULL,
+    volume       REAL NOT NULL,
+    type         TEXT NOT NULL,
+    PRIMARY KEY (symbol, tf, start_time, type, avg_price)
+);
+
 -- ════════════════════════════════════════════════════════════════════
 -- 五、配置覆盖（前端可调阈值）
 -- ════════════════════════════════════════════════════════════════════
@@ -323,4 +423,4 @@ CREATE INDEX IF NOT EXISTS idx_snapshots_symbol_tf_ts
 -- ════════════════════════════════════════════════════════════════════
 
 INSERT OR REPLACE INTO schema_meta(key, value)
-    VALUES ('schema_version', '2');
+    VALUES ('schema_version', '4');

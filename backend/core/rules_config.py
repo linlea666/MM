@@ -114,9 +114,19 @@ def _expect(cond: bool, msg: str) -> None:
         raise ConfigValueInvalidError(msg)
 
 
+def _looks_like_masked_secret(value: str) -> bool:
+    """mask 形态侦测：值包含至少 3 个 ``*`` 就视为 mask 形态。
+
+    前端回填时（用户没修改 secret）应当直接不传；若误传 mask 字符串，
+    我们拒绝保存以避免覆盖真 key。
+    """
+    return isinstance(value, str) and value.count("*") >= 3
+
+
 def validate_value(meta_item: Mapping[str, Any], value: Any) -> Any:
     """根据单项 meta 校验并可能强转 value；返回最终写入值。"""
     t = meta_item.get("type")
+    fmt = meta_item.get("format")
     if t == "bool":
         _expect(isinstance(value, bool), f"期望 bool，实际 {type(value).__name__}")
     elif t == "int":
@@ -129,6 +139,11 @@ def validate_value(meta_item: Mapping[str, Any], value: Any) -> Any:
         value = float(value)
     elif t == "string":
         _expect(isinstance(value, str), f"期望 string，实际 {type(value).__name__}")
+        # V1.1 · Phase 9：secret 格式特殊保护 —— 识别 mask 形态拒写
+        if fmt == "secret" and _looks_like_masked_secret(value):
+            raise ConfigValueInvalidError(
+                "secret 字段不接受 mask 形态值（含 *）；若未修改请不要提交该字段。"
+            )
     elif t == "enum":
         opts = meta_item.get("options") or []
         _expect(value in opts, f"必须是 {opts} 之一")

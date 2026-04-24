@@ -17,7 +17,7 @@ from backend.models import (
     TrendPuritySegment,
     VacuumBand,
 )
-from backend.rules.features import FeatureSnapshot
+from backend.rules.features import ChochLatestView, FeatureSnapshot
 from backend.rules.scoring import (
     LevelCandidate,
     LevelSource,
@@ -176,13 +176,18 @@ def test_breakout_bidirectional_uses_cvd_tiebreak(cfg):
 
 
 def test_reversal_bearish_on_top_exhaustion(cfg):
+    """顶部反转看跌：Accumulation 耗竭（吸筹方打光子弹涨不动）→ bearish。
+
+    口径严格对齐 docs/upstream-api/endpoints/trend_exhaustion.md §大屏使用。
+    历史上该方向曾被写反（Distribution→bearish），此用例作为回归守门人。
+    """
     snap = _base_snap(
         sweep_count_recent=2,
         sweep_last=LiquiditySweepEvent(
             symbol="BTC", tf="30m", ts=1, price=101.0, type="bearish_sweep", volume=10.0
         ),
         trend_exhaustion_last=TrendExhaustionPoint(
-            symbol="BTC", tf="30m", ts=1, exhaustion=8, type="Distribution"
+            symbol="BTC", tf="30m", ts=1, exhaustion=8, type="Accumulation"
         ),
         fair_value_delta_pct=0.02,
         just_broke_resistance=True,
@@ -192,11 +197,99 @@ def test_reversal_bearish_on_top_exhaustion(cfg):
     assert cap.score >= 80  # 四项都该中
 
 
+def test_reversal_bullish_on_distribution_exhaustion(cfg):
+    """底部反转看涨：Distribution 耗竭（派发方巨量资金砸不动）→ bullish。
+
+    参见 docs/upstream-api/endpoints/trend_exhaustion.md：
+    Distribution 耗竭 = 空头子弹打光 = 底部反转预警 = bullish。
+    """
+    snap = _base_snap(
+        sweep_count_recent=1,
+        sweep_last=LiquiditySweepEvent(
+            symbol="BTC", tf="30m", ts=1, price=99.0, type="bullish_sweep", volume=10.0
+        ),
+        trend_exhaustion_last=TrendExhaustionPoint(
+            symbol="BTC", tf="30m", ts=1, exhaustion=8.5, type="Distribution"
+        ),
+        fair_value_delta_pct=-0.02,
+        just_broke_support=True,
+    )
+    cap = score_reversal(snap, cfg)
+    assert cap.direction == "bullish"
+
+
 def test_reversal_no_signal(cfg):
     snap = _base_snap()
     cap = score_reversal(snap, cfg)
     assert cap.score == 0
     # direction 可能是 neutral/bullish/bearish 取决于 fair_value；但 score=0 就够了
+
+
+# ═══════════════ V1.1 · CHoCH / BOS ═══════════════════════
+
+
+def _choch_view(**overrides) -> ChochLatestView:
+    defaults = dict(
+        ts=1_700_000_000_000,
+        price=100.0,
+        level_price=99.0,
+        origin_ts=1_699_999_000_000,
+        type="CHoCH_Bullish",
+        kind="CHoCH",
+        direction="bullish",
+        is_choch=True,
+        distance_pct=-0.01,
+        bars_since=1,
+    )
+    defaults.update(overrides)
+    return ChochLatestView(**defaults)
+
+
+def test_reversal_choch_bullish_overrides_direction(cfg):
+    """⚡ CHoCH_Bullish 命中 → 覆盖 direction 为 bullish（即便 te=Accumulation 推 bearish）。"""
+    snap = _base_snap(
+        trend_exhaustion_last=TrendExhaustionPoint(
+            symbol="BTC", tf="30m", ts=1, exhaustion=8, type="Accumulation"
+        ),
+        choch_latest=_choch_view(type="CHoCH_Bullish", direction="bullish"),
+    )
+    cap = score_reversal(snap, cfg)
+    # CHoCH 事件 > te 推断，direction 被覆盖
+    assert cap.direction == "bullish"
+    # evidence 应包含 choch_reversal 条
+    ids = [e.rule_id for e in cap.evidence]
+    assert "choch_reversal" in ids
+
+
+def test_reversal_choch_out_of_window_no_direction_override(cfg):
+    """CHoCH 超窗 → 不覆盖 direction，保留 te 的 bearish 判断。"""
+    snap = _base_snap(
+        trend_exhaustion_last=TrendExhaustionPoint(
+            symbol="BTC", tf="30m", ts=1, exhaustion=8, type="Accumulation"
+        ),
+        choch_latest=_choch_view(bars_since=99),
+    )
+    cap = score_reversal(snap, cfg)
+    # 超窗 → choch 不生效 → te 推断胜出
+    assert cap.direction == "bearish"
+
+
+def test_breakout_bos_bearish_overrides_direction(cfg):
+    """⚡ BOS_Bearish 命中 → direction 被覆盖为 bearish，即使 resistance 穿越。"""
+    snap = _base_snap(
+        just_broke_resistance=True,  # 无 CHoCH 时本应 bullish
+        choch_latest=_choch_view(
+            type="BOS_Bearish",
+            kind="BOS",
+            direction="bearish",
+            is_choch=False,
+            bars_since=1,
+        ),
+    )
+    cap = score_breakout(snap, cfg)
+    assert cap.direction == "bearish"
+    ids = [e.rule_id for e in cap.evidence]
+    assert "bos_confirm" in ids
 
 
 # ═══════════════ key_level ═══════════════════════════

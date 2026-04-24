@@ -16,7 +16,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from backend.ai import AIObservationService
 from backend.api import (
+    ai_router,
     config_router,
     dashboard_router,
     logs_router,
@@ -88,6 +90,17 @@ async def lifespan(app: FastAPI):
     rule_runner = RuleRunner(db, config=rules_config_svc.snapshot())
     dashboard_cache: TTLCache = TTLCache(ttl_seconds=2.0)
 
+    # V1.1 · Phase 9 · AI 观察服务（enabled=false 时用 StubProvider，不会真调 LLM）
+    data_dir = settings.config_dir.parent  # backend/ 目录
+    ai_service = AIObservationService(
+        data_dir=data_dir,
+        rules_snapshot=rules_config_svc.snapshot(),
+        fallback_api_key=settings.ai.api_key,
+        fallback_base_url=settings.ai.base_url,
+    )
+    await ai_service.startup()
+    rule_runner.set_ai_observer(ai_service.observer)
+
     # WebSocket brokers
     ws_dashboard = DashboardBroker(rule_runner, interval=5.0)
     ws_logs = LogBroker()
@@ -97,6 +110,18 @@ async def lifespan(app: FastAPI):
         rule_runner._config = snap
         rule_runner._ext._config = snap
         dashboard_cache.invalidate()
+        # AI 服务热更新（provider 配置 / 阈值变动）
+        try:
+            await ai_service.reload(
+                rules_snapshot=snap,
+                fallback_api_key=settings.ai.api_key,
+                fallback_base_url=settings.ai.base_url,
+            )
+            rule_runner.set_ai_observer(ai_service.observer)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"AI 服务热更新失败：{e}", extra={"tags": [Tags.CONFIG, "AI"]}
+            )
         logger.info(
             "规则配置变更 → RuleRunner 已热更新 + 快照缓存已清空",
             extra={"tags": [Tags.CONFIG, Tags.RULES]},
@@ -170,6 +195,7 @@ async def lifespan(app: FastAPI):
     app.state.dashboard_cache = dashboard_cache
     app.state.ws_dashboard = ws_dashboard
     app.state.ws_logs = ws_logs
+    app.state.ai_service = ai_service
     app.state.start_ms = now_ms()
 
     try:
@@ -188,6 +214,10 @@ async def lifespan(app: FastAPI):
             pass
         try:
             scheduler.shutdown(wait=False)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            await ai_service.aclose()
         except Exception:  # noqa: BLE001
             pass
         try:
@@ -228,6 +258,7 @@ def create_app() -> FastAPI:
     app.include_router(system_router)
     app.include_router(config_router)
     app.include_router(logs_router)
+    app.include_router(ai_router)
     app.include_router(ws_router)
 
     @app.get("/")

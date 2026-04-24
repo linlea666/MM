@@ -4,9 +4,12 @@ import {
   AlertTriangle,
   Check,
   Diff,
+  GraduationCap,
   Loader2,
   RotateCcw,
   Save,
+  Search,
+  Sparkles,
   Undo2,
   X,
 } from "lucide-react";
@@ -35,6 +38,7 @@ import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Tabs,
@@ -69,21 +73,61 @@ export default function ConfigPage() {
     if (!activeGroup && groups.length > 0) setActiveGroup(groups[0].id);
   }, [groups, activeGroup]);
 
-  // 分组后的 Tier 1 items（仅展示有配置项的分组）
+  // V1.1 · Phase 5 · 小白 / 专家双模式（持久化到 localStorage，默认小白）
+  const [mode, setMode] = useState<"basic" | "expert">(() => {
+    if (typeof localStorage === "undefined") return "basic";
+    const saved = localStorage.getItem("mm.config.mode");
+    return saved === "expert" ? "expert" : "basic";
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem("mm.config.mode", mode);
+    } catch {
+      // 忽略 QuotaExceeded 等非致命错误
+    }
+  }, [mode]);
+
+  // 搜索过滤（debounce 简化：同步更新；meta 体量 ~200 足够快）
+  const [search, setSearch] = useState("");
+  const searchLower = search.trim().toLowerCase();
+
+  // 应用 tier + search 过滤，然后按 group 分桶
   const groupedItems = useMemo(() => {
     const buckets = new Map<string, { key: string; meta: ConfigItemMeta }[]>();
     for (const [k, m] of Object.entries(items)) {
+      if (mode === "basic" && m.tier !== "basic") continue;
+      if (searchLower.length > 0) {
+        const hay = [
+          m.label,
+          k,
+          m.subgroup ?? "",
+          m.help ?? "",
+          m.impact ?? "",
+        ]
+          .join(" ")
+          .toLowerCase();
+        if (!hay.includes(searchLower)) continue;
+      }
       const g = m.group;
       if (!buckets.has(g)) buckets.set(g, []);
       buckets.get(g)!.push({ key: k, meta: m });
     }
     return buckets;
-  }, [items]);
+  }, [items, mode, searchLower]);
 
   const visibleGroups = useMemo(
     () => groups.filter((g) => (groupedItems.get(g.id)?.length ?? 0) > 0),
     [groups, groupedItems],
   );
+
+  // 供分组徽标使用：每个 group 的"所有 items 总数"（不受当前过滤影响，便于用户看到全量规模）
+  const totalCountByGroup = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const m of Object.values(items)) {
+      map.set(m.group, (map.get(m.group) ?? 0) + 1);
+    }
+    return map;
+  }, [items]);
 
   useEffect(() => {
     if (
@@ -290,6 +334,61 @@ export default function ConfigPage() {
 
         {/* ─── 规则参数 ─── */}
         <TabsContent value="form">
+          {/* V1.1 · 模式切换 + 搜索 */}
+          <div className="mb-3 flex flex-wrap items-center gap-3">
+            <div className="inline-flex rounded-md border border-border/60 bg-card/40 p-0.5 text-xs">
+              <button
+                onClick={() => setMode("basic")}
+                className={cn(
+                  "inline-flex items-center gap-1 rounded px-3 py-1 transition-colors",
+                  mode === "basic"
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+                title="小白模式：只显示推荐项 + 所有权重（约 60 项）"
+              >
+                <Sparkles className="h-3.5 w-3.5" />
+                小白模式
+              </button>
+              <button
+                onClick={() => setMode("expert")}
+                className={cn(
+                  "inline-flex items-center gap-1 rounded px-3 py-1 transition-colors",
+                  mode === "expert"
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+                title="专家模式：显示所有可配置项（阈值 / 细粒度参数 / 危险项）"
+              >
+                <GraduationCap className="h-3.5 w-3.5" />
+                专家模式
+              </button>
+            </div>
+            <div className="relative max-w-sm flex-1">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                placeholder="搜索：label / 路径 / 帮助文案…"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="h-8 pl-8 text-xs"
+              />
+              {search && (
+                <button
+                  onClick={() => setSearch("")}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                  title="清空搜索"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              )}
+            </div>
+            <div className="ml-auto text-xs text-muted-foreground">
+              {mode === "basic" ? "小白模式" : "专家模式"} ·{" "}
+              {[...groupedItems.values()].reduce((n, l) => n + l.length, 0)} /{" "}
+              {Object.keys(items).length} 项
+            </div>
+          </div>
+
           <div className="grid gap-4 lg:grid-cols-12">
             {/* 左：分组导航 */}
             <aside className="lg:col-span-3">
@@ -301,12 +400,14 @@ export default function ConfigPage() {
                   <nav className="flex flex-col gap-0.5">
                     {visibleGroups.map((g) => {
                       const count = groupedItems.get(g.id)?.length ?? 0;
+                      const total = totalCountByGroup.get(g.id) ?? 0;
                       const dirtyInGroup = Object.keys(dirty).filter(
                         (k) => items[k]?.group === g.id,
                       ).length;
                       const overriddenInGroup = [...overriddenKeys].filter(
                         (k) => items[k]?.group === g.id,
                       ).length;
+                      const showTotal = mode === "basic" && count !== total;
                       return (
                         <button
                           key={g.id}
@@ -336,14 +437,26 @@ export default function ConfigPage() {
                                 {overriddenInGroup}
                               </Badge>
                             )}
-                            <span className="font-mono text-[10px] opacity-60">
-                              {count}
+                            <span
+                              className="font-mono text-[10px] opacity-60"
+                              title={
+                                showTotal
+                                  ? `当前显示 ${count} / ${total}（切换到专家模式可见全部）`
+                                  : undefined
+                              }
+                            >
+                              {showTotal ? `${count}/${total}` : count}
                             </span>
                           </div>
                         </button>
                       );
                     })}
                   </nav>
+                  {visibleGroups.length === 0 && (
+                    <div className="p-4 text-center text-xs text-muted-foreground">
+                      没有匹配的配置项。试试切换到专家模式或清空搜索。
+                    </div>
+                  )}
                 </CardContent>
               </Card>
 

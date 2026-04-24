@@ -36,7 +36,10 @@ async def test_pragma_wal_mode(db: Database) -> None:
 
 async def test_schema_meta_version(db: Database) -> None:
     v = await db.fetch_scalar("SELECT value FROM schema_meta WHERE key='schema_version'")
-    assert v == "2"
+    # v3: atoms_trend_exhaustion.exhaustion -> REAL + atoms_smart_money.end_time 允许 NULL
+    # v4: V1.1 扩展 7 张原子表（choch_events / roi_segments / pain_drawdown /
+    #     time_windows / dd_tolerance / cascade_bands / retail_stop_bands）
+    assert v == "4"
 
 
 async def test_kline_upsert_overrides(db: Database) -> None:

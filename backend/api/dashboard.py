@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, HTTPException, Query, Response
+from fastapi import APIRouter, Query, Response
 
 from backend.collector.subscription_mgr import SubscriptionManager
 from backend.core.logging import Tags
+from backend.core.timeframes import DEFAULT_TF, SupportedTf
 from backend.models import DashboardSnapshot
 from backend.rules import RuleRunner
 from backend.storage.repositories import SubscriptionRepository
@@ -24,8 +25,7 @@ from .deps import (
     get_rule_runner,
     get_sub_mgr,
     get_sub_repo,
-    normalize_symbol,
-    normalize_tf,
+    resolve_active_symbol,
 )
 
 logger = logging.getLogger("api.dashboard")
@@ -33,33 +33,23 @@ logger = logging.getLogger("api.dashboard")
 router = APIRouter(prefix="/api", tags=["dashboard"])
 
 
-async def _resolve_symbol(
-    symbol: str | None,
-    sub_repo: SubscriptionRepository,
-) -> str:
-    if symbol is not None:
-        return normalize_symbol(symbol)
-    active = await sub_repo.list_active()
-    if not active:
-        raise HTTPException(
-            status_code=404,
-            detail="当前没有激活的订阅，请先 POST /api/subscriptions 添加",
-        )
-    return active[0].symbol   # repo 按 display_order asc 返回
-
-
 @router.get("/dashboard", response_model=DashboardSnapshot)
 async def get_dashboard(
     response: Response,
-    symbol: str | None = Query(None, description="币种代码（不传则取第一个 active 订阅）"),
-    tf: str = Query("30m", description="周期：5m / 15m / 30m / 1h / 2h / 4h / 1d"),
+    symbol: str | None = Query(
+        None, description="币种代码（必须在激活订阅列表中；不传则取第一个 active 订阅）"
+    ),
+    tf: SupportedTf = Query(
+        DEFAULT_TF, description="周期：30m / 1h / 4h（V1.1 · 单一真源）"
+    ),
     runner: RuleRunner = Depends(get_rule_runner),
     cache: TTLCache = Depends(get_dashboard_cache),
     sub_repo: SubscriptionRepository = Depends(get_sub_repo),
     _sub_mgr: SubscriptionManager = Depends(get_sub_mgr),   # 未来扩展预留
 ) -> DashboardSnapshot:
-    resolved_symbol = await _resolve_symbol(symbol, sub_repo)
-    resolved_tf = normalize_tf(tf)
+    resolved_symbol = await resolve_active_symbol(symbol, sub_repo)
+    # FastAPI 已按 Literal 做 422 校验，这里 tf 天然是 SupportedTf，无需二次 normalize
+    resolved_tf: str = tf
     cache_key = f"{resolved_symbol}|{resolved_tf}"
 
     async def _run() -> DashboardSnapshot:

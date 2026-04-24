@@ -141,9 +141,21 @@ def test_dashboard_no_data_is_404(api_client: TestClient) -> None:
     assert r.json()["error"]["code"] == "NO_DATA"
 
 
-def test_dashboard_invalid_tf_is_400(api_client: TestClient) -> None:
+def test_dashboard_invalid_tf_is_422(api_client: TestClient) -> None:
+    """V1.1 · 周期单一真源：非 30m/1h/4h 的 tf 被 FastAPI Literal 拦为 422。"""
     r = api_client.get("/api/dashboard", params={"tf": "7m"})
-    assert r.status_code == 400
+    assert r.status_code == 422
+    # 错误信息里应能辨认出是 tf 字段问题
+    assert "tf" in r.text.lower()
+
+
+@pytest.mark.parametrize("bad_tf", ["5m", "15m", "2h", "1d", "", "TF"])
+def test_dashboard_rejects_deprecated_tfs(
+    api_client: TestClient, bad_tf: str
+) -> None:
+    """V1.1：历史遗留的 5m/15m/2h/1d 一律 422，防止前端静默空跑。"""
+    r = api_client.get("/api/dashboard", params={"tf": bad_tf})
+    assert r.status_code == 422
 
 
 def test_dashboard_no_subscription_is_404(api_client: TestClient) -> None:
@@ -152,6 +164,24 @@ def test_dashboard_no_subscription_is_404(api_client: TestClient) -> None:
     r = api_client.get("/api/dashboard", params={"tf": "30m"})
     # 没有 active 订阅 → 404
     assert r.status_code == 404
+
+
+def test_dashboard_unknown_symbol_is_404(api_client: TestClient) -> None:
+    """V1.1 · 币种单一真源：传入的 symbol 不在 active 订阅中应返 404，
+    提示用户去订阅，而不是静默 500 / 空跑。"""
+    # 默认订阅里只有 BTC，请求 ETH（格式合法但未订阅）
+    r = api_client.get("/api/dashboard", params={"symbol": "ETH", "tf": "30m"})
+    assert r.status_code == 404
+    detail = r.json()["error"]["message"] if "error" in r.json() else r.text
+    assert "NO_ACTIVE_SUBSCRIPTION" in detail or "未在激活订阅" in detail
+
+
+def test_dashboard_default_tf_is_30m(api_client: TestClient) -> None:
+    """V1.1：未传 tf 时默认走 30m（DEFAULT_TF），即参数解析不应 422。"""
+    r = api_client.get("/api/dashboard", params={"symbol": "BTC"})
+    # 空 DB 下必然 NO_DATA 404；重点是确认 **不是** 422（证明 Literal 默认值生效）
+    assert r.status_code == 404
+    assert r.json()["error"]["code"] == "NO_DATA"
 
 
 # ─── /api/system/health ─────────────────────────────────

@@ -5,7 +5,7 @@
 # 未登记在这里的 key 视为 Tier 3（不给前端）。
 #
 # schema：
-#   type:    number | int | bool | string | enum | percent | weight
+#   type:    number | int | bool | string | enum | percent | weight | array
 #   min/max/step: 数字类
 #   options: enum 类
 #   group:   前端面板分组（对应大屏模块）
@@ -14,6 +14,10 @@
 #   impact:  参数调大 / 调小的后果
 #   danger:  true 表示"关键改动"，前端保存时二次确认
 #   readonly: true 表示 Tier 2 只读
+#   format:  特殊子类型（目前：color）
+#   tier:    basic | expert（V1.1 · 小白/专家双模式，默认 expert）
+#           - basic: 小白模式也会显示；推荐项 + 所有权重
+#           - expert: 仅专家模式显示（阈值、细粒度参数、危险项）
 #
 # percent / weight 均为 0-1 浮点，只是前端分别渲染为百分比滑条和权重条
 
@@ -52,6 +56,7 @@ items:
     label: "fair_value 上行斜率"
     help: "fair_value 在最近窗口的斜率为正时贡献的权重"
     impact: "调高：更依赖真实价值上行；调低：更看主力动作"
+    tier: basic
   capabilities.accumulation.weights.poc_shift_up:
     type: weight
     min: 0
@@ -60,6 +65,7 @@ items:
     group: capabilities
     subgroup: "多头吸筹 · 权重"
     label: "POC 重心上移"
+    tier: basic
   capabilities.accumulation.weights.imbalance_green:
     type: weight
     min: 0
@@ -68,6 +74,7 @@ items:
     group: capabilities
     subgroup: "多头吸筹 · 权重"
     label: "imbalance 绿占比"
+    tier: basic
   capabilities.accumulation.weights.cvd_slope_up:
     type: weight
     min: 0
@@ -76,6 +83,7 @@ items:
     group: capabilities
     subgroup: "多头吸筹 · 权重"
     label: "CVD 斜率正"
+    tier: basic
   capabilities.accumulation.weights.near_support:
     type: weight
     min: 0
@@ -84,6 +92,7 @@ items:
     group: capabilities
     subgroup: "多头吸筹 · 权重"
     label: "贴近支撑位"
+    tier: basic
   capabilities.accumulation.weights.resonance_buy:
     type: weight
     min: 0
@@ -92,6 +101,7 @@ items:
     group: capabilities
     subgroup: "多头吸筹 · 权重"
     label: "共振买方向"
+    tier: basic
   capabilities.accumulation.thresholds.imbalance_green_ratio:
     type: percent
     min: 0.3
@@ -127,6 +137,7 @@ items:
     group: capabilities
     subgroup: "空头派发 · 权重"
     label: "fair_value 下行斜率"
+    tier: basic
   capabilities.distribution.weights.poc_shift_down:
     type: weight
     min: 0
@@ -135,6 +146,7 @@ items:
     group: capabilities
     subgroup: "空头派发 · 权重"
     label: "POC 重心下移"
+    tier: basic
   capabilities.distribution.weights.imbalance_red:
     type: weight
     min: 0
@@ -143,6 +155,7 @@ items:
     group: capabilities
     subgroup: "空头派发 · 权重"
     label: "imbalance 红占比"
+    tier: basic
   capabilities.distribution.weights.cvd_slope_down:
     type: weight
     min: 0
@@ -151,6 +164,7 @@ items:
     group: capabilities
     subgroup: "空头派发 · 权重"
     label: "CVD 斜率负"
+    tier: basic
   capabilities.distribution.weights.near_resistance:
     type: weight
     min: 0
@@ -159,6 +173,7 @@ items:
     group: capabilities
     subgroup: "空头派发 · 权重"
     label: "贴近阻力位"
+    tier: basic
   capabilities.distribution.weights.resonance_sell:
     type: weight
     min: 0
@@ -167,6 +182,7 @@ items:
     group: capabilities
     subgroup: "空头派发 · 权重"
     label: "共振卖方向"
+    tier: basic
   capabilities.distribution.thresholds.imbalance_red_ratio:
     type: percent
     min: 0.3
@@ -193,6 +209,7 @@ items:
     group: capabilities
     subgroup: "突破确认 · 权重"
     label: "关键位穿越"
+    tier: basic
   capabilities.breakout.weights.whale_resonance:
     type: weight
     min: 0
@@ -201,6 +218,7 @@ items:
     group: capabilities
     subgroup: "突破确认 · 权重"
     label: "共振推动"
+    tier: basic
   capabilities.breakout.weights.power_imbalance:
     type: weight
     min: 0
@@ -209,6 +227,7 @@ items:
     group: capabilities
     subgroup: "突破确认 · 权重"
     label: "力量悬殊"
+    tier: basic
   capabilities.breakout.weights.ob_decayed:
     type: weight
     min: 0
@@ -217,6 +236,7 @@ items:
     group: capabilities
     subgroup: "突破确认 · 权重"
     label: "订单墙已衰减"
+    tier: basic
   capabilities.breakout.weights.space_ahead:
     type: weight
     min: 0
@@ -225,6 +245,7 @@ items:
     group: capabilities
     subgroup: "突破确认 · 权重"
     label: "前方有空间"
+    tier: basic
   capabilities.breakout.thresholds.pierce_atr_mult:
     type: number
     min: 0.1
@@ -258,6 +279,26 @@ items:
     group: capabilities
     subgroup: "突破确认 · 阈值"
     label: "订单墙衰减阈值"
+  capabilities.breakout.weights.bos_confirm:
+    type: weight
+    min: 0
+    max: 1
+    step: 0.05
+    group: capabilities
+    subgroup: "突破确认 · 权重"
+    label: "⚡ BOS 结构延续"
+    help: "机构带量突破前高/前低 → 真突破确认。默认 0（关闭）；启用时需同比减其他权重使总和=1"
+    impact: "调大 → 越信任右侧结构事件；调小 → 越保守"
+    tier: basic
+  capabilities.breakout.thresholds.bos_max_bars_since:
+    type: int
+    min: 1
+    max: 20
+    step: 1
+    group: capabilities
+    subgroup: "突破确认 · 阈值"
+    label: "BOS 事件有效窗口（K 线数）"
+    help: "BOS 事件须在最近 N 根内才计入，越新越满分"
 
   # ─── 能力：反转 ───
   capabilities.reversal.weights.sweep_recent:
@@ -268,6 +309,7 @@ items:
     group: capabilities
     subgroup: "反转 · 权重"
     label: "最近猎杀事件"
+    tier: basic
   capabilities.reversal.weights.exhaustion_high:
     type: weight
     min: 0
@@ -276,6 +318,7 @@ items:
     group: capabilities
     subgroup: "反转 · 权重"
     label: "能量耗竭高位"
+    tier: basic
   capabilities.reversal.weights.fair_value_diverge:
     type: weight
     min: 0
@@ -284,6 +327,7 @@ items:
     group: capabilities
     subgroup: "反转 · 权重"
     label: "fair_value 背离"
+    tier: basic
   capabilities.reversal.weights.liq_pierce_recover:
     type: weight
     min: 0
@@ -292,6 +336,7 @@ items:
     group: capabilities
     subgroup: "反转 · 权重"
     label: "刺穿清算后收回"
+    tier: basic
   capabilities.reversal.thresholds.exhaustion_alert:
     type: int
     min: 1
@@ -308,6 +353,46 @@ items:
     group: capabilities
     subgroup: "反转 · 阈值"
     label: "背离百分比"
+  capabilities.reversal.weights.choch_reversal:
+    type: weight
+    min: 0
+    max: 1
+    step: 0.05
+    group: capabilities
+    subgroup: "反转 · 权重"
+    label: "⚡ CHoCH 结构反转"
+    help: "机构带量砸穿前高/前低 → 趋势反转确立。默认 0（关闭）；启用时需同比减其他权重使总和=1"
+    impact: "调大 → 越信任右侧结构事件；调小 → 越保守"
+    tier: basic
+  capabilities.reversal.thresholds.choch_max_bars_since:
+    type: int
+    min: 1
+    max: 20
+    step: 1
+    group: capabilities
+    subgroup: "反转 · 阈值"
+    label: "CHoCH 事件有效窗口（K 线数）"
+    help: "CHoCH 事件须在最近 N 根内才计入，越新越满分"
+  capabilities.reversal.weights.time_exhausted:
+    type: weight
+    min: 0
+    max: 1
+    step: 0.05
+    group: capabilities
+    subgroup: "反转 · 权重"
+    label: "趋势时间极限"
+    help: "越过死亡线/中年虚线 → 趋势衰竭。默认 0（关闭）；启用时需同比减其他权重使总和=1"
+    tier: basic
+  capabilities.reversal.weights.dd_pierce:
+    type: weight
+    min: 0
+    max: 1
+    step: 0.05
+    group: capabilities
+    subgroup: "反转 · 权重"
+    label: "📌 移动护城河刺穿"
+    help: "dd_tolerance 黄色图钉命中 = 强反转信号。默认 0（关闭）；启用时需同比减其他权重使总和=1"
+    tier: basic
 
   # ─── 关键位 ───
   key_levels.merge_distance_pct:
@@ -335,6 +420,56 @@ items:
     group: key_levels
     subgroup: "阶梯图"
     label: "最少来源数"
+    tier: basic
+  key_levels.r_levels:
+    type: int
+    min: 1
+    max: 6
+    step: 1
+    group: key_levels
+    subgroup: "阶梯图"
+    label: "阻力档数量"
+    help: "R1~Rn，实际显示条数；多出的位会进入远距列表"
+    tier: basic
+  key_levels.s_levels:
+    type: int
+    min: 1
+    max: 6
+    step: 1
+    group: key_levels
+    subgroup: "阶梯图"
+    label: "支撑档数量"
+    help: "S1~Sn，实际显示条数；多出的位会进入远距列表"
+    tier: basic
+  key_levels.far_range_pct_min:
+    type: percent
+    min: 0.003
+    max: 0.05
+    step: 0.001
+    group: key_levels
+    subgroup: "远距"
+    label: "远距下限 %"
+    help: "距当前价 ≥ 此值才进入远距候选（低于此值归属中距 / 阶梯）"
+  key_levels.far_range_pct_max:
+    type: percent
+    min: 0.02
+    max: 0.2
+    step: 0.005
+    group: key_levels
+    subgroup: "远距"
+    label: "远距上限 %"
+    help: "距当前价 ≤ 此值才保留（过远视作无参考意义）"
+    tier: basic
+  key_levels.max_far_count:
+    type: int
+    min: 0
+    max: 20
+    step: 1
+    group: key_levels
+    subgroup: "远距"
+    label: "远距每侧条数"
+    help: "多头/空头远距各最多显示多少条；0 = 关闭远距展示"
+    tier: basic
   capabilities.key_level_strength.source_weights.hvn:
     type: int
     min: 0
@@ -343,6 +478,7 @@ items:
     group: key_levels
     subgroup: "来源权重"
     label: "HVN 节点"
+    tier: basic
   capabilities.key_level_strength.source_weights.absolute_zone:
     type: int
     min: 0
@@ -351,6 +487,7 @@ items:
     group: key_levels
     subgroup: "来源权重"
     label: "密集博弈带"
+    tier: basic
   capabilities.key_level_strength.source_weights.fvg:
     type: int
     min: 0
@@ -359,6 +496,7 @@ items:
     group: key_levels
     subgroup: "来源权重"
     label: "真空区边缘"
+    tier: basic
   capabilities.key_level_strength.source_weights.micro_poc:
     type: int
     min: 0
@@ -367,6 +505,7 @@ items:
     group: key_levels
     subgroup: "来源权重"
     label: "微观成本"
+    tier: basic
   capabilities.key_level_strength.source_weights.smart_money:
     type: int
     min: 0
@@ -375,6 +514,7 @@ items:
     group: key_levels
     subgroup: "来源权重"
     label: "主力成本"
+    tier: basic
   capabilities.key_level_strength.source_weights.trend_price:
     type: int
     min: 0
@@ -383,6 +523,7 @@ items:
     group: key_levels
     subgroup: "来源权重"
     label: "订单块"
+    tier: basic
   capabilities.key_level_strength.source_weights.heatmap:
     type: int
     min: 0
@@ -391,6 +532,27 @@ items:
     group: key_levels
     subgroup: "来源权重"
     label: "清算带"
+    tier: basic
+  capabilities.key_level_strength.source_weights.cascade_band:
+    type: int
+    min: 0
+    max: 100
+    step: 5
+    group: key_levels
+    subgroup: "来源权重"
+    label: "💣 机构连环爆仓带"
+    help: "雷区插针反向接针战法的核心位；数值越大，该类位在关键位阶梯中权重越高"
+    tier: basic
+  capabilities.key_level_strength.source_weights.retail_band:
+    type: int
+    min: 0
+    max: 100
+    step: 5
+    group: key_levels
+    subgroup: "来源权重"
+    label: "散户止损带"
+    help: "磁吸方向/破位追单战法的燃料位；数值越大，该类位在关键位阶梯中权重越高"
+    tier: basic
 
   # ─── 流动性磁吸 ───
   capabilities.liquidity_magnet.weights.heatmap_intensity:
@@ -401,6 +563,7 @@ items:
     group: key_levels
     subgroup: "磁吸 · 权重"
     label: "清算带强度"
+    tier: basic
   capabilities.liquidity_magnet.weights.fuel_strength:
     type: weight
     min: 0
@@ -409,6 +572,7 @@ items:
     group: key_levels
     subgroup: "磁吸 · 权重"
     label: "燃料带强度"
+    tier: basic
   capabilities.liquidity_magnet.weights.vacuum_pull:
     type: weight
     min: 0
@@ -417,6 +581,7 @@ items:
     group: key_levels
     subgroup: "磁吸 · 权重"
     label: "真空区牵引"
+    tier: basic
   capabilities.liquidity_magnet.weights.distance_close:
     type: weight
     min: 0
@@ -425,6 +590,7 @@ items:
     group: key_levels
     subgroup: "磁吸 · 权重"
     label: "距离近加分"
+    tier: basic
   capabilities.liquidity_magnet.thresholds.heatmap_min_intensity:
     type: percent
     min: 0.1
@@ -541,14 +707,6 @@ items:
     group: phase
     subgroup: "稳定性"
     label: "阶段最低置信度"
-  phase_state_machine.instability_max_flips:
-    type: int
-    min: 1
-    max: 5
-    step: 1
-    group: phase
-    subgroup: "稳定性"
-    label: "窗口内最大翻转次数"
 
   # ─── 参与度 ───
   participation.resonance_window_bars:
@@ -585,6 +743,7 @@ items:
     group: trade_plan
     subgroup: "入场/止损"
     label: "入场区间宽度 ±%"
+    tier: basic
   trade_plan.stop_buffer_pct:
     type: percent
     min: 0.001
@@ -593,12 +752,14 @@ items:
     group: trade_plan
     subgroup: "入场/止损"
     label: "止损缓冲 %"
+    tier: basic
   trade_plan.target_ratios:
     type: array
     item_type: number
     group: trade_plan
     subgroup: "目标"
     label: "T1 / T2 盈亏比"
+    tier: basic
   trade_plan.veto.exhaustion:
     type: int
     min: 1
@@ -615,6 +776,38 @@ items:
     group: trade_plan
     subgroup: "否决条件"
     label: "活跃度最低要求"
+  trade_plan.use_segment_portrait:
+    type: bool
+    group: trade_plan
+    subgroup: "V1.1 · 波段四维"
+    label: "启用波段四维接管止盈止损"
+    help: "开启后：T1/T2 优先用 ROI 极限价，止损参考 Pain 防线（需已有波段数据）"
+    tier: basic
+  trade_plan.veto.time_exhausted:
+    type: bool
+    group: trade_plan
+    subgroup: "否决条件"
+    label: "时间死亡线强制观望"
+    help: "bars_to_max ≤ 0（已撞时间死亡线）→ 立刻强制观望。默认关闭"
+    tier: basic
+  trade_plan.veto.dd_pierced:
+    type: bool
+    group: trade_plan
+    subgroup: "否决条件"
+    label: "📌 护城河刺穿强制观望"
+    help: "dd_pierce_count ≥ 1（护城河已破）→ 立刻强制观望。默认关闭"
+
+  # ─── Hero Strip（V1.1）───
+  hero.choch_alert_bars:
+    type: int
+    min: 0
+    max: 20
+    step: 1
+    group: radar
+    subgroup: "顶部结论条"
+    label: "⚡ CHoCH/BOS 角标窗口（K 线数）"
+    help: "最近 N 根内命中 ⚡ 机构事件时，hero.market_structure 以闪电角标呈现；设为 0 禁用"
+    tier: basic
 
   # ─── AI 观察 ───
   ai_observer.enabled:
@@ -623,6 +816,7 @@ items:
     subgroup: "总开关"
     label: "启用 AI 观察"
     danger: true
+    tier: basic
   ai_observer.trigger.conflict_score_gap:
     type: int
     min: 10
@@ -631,6 +825,7 @@ items:
     group: ai
     subgroup: "触发"
     label: "能力分冲突差值"
+    tier: basic
   ai_observer.trigger.attention_min:
     type: int
     min: 0
@@ -648,6 +843,176 @@ items:
     subgroup: "产出"
     label: "每轮最大观察数"
 
+  # ─── V1.1 · Phase 9 · AI 观察（统一模型：L1 趋势 → L2 资金 → [条件触发] L3 计划） ───
+  ai.enabled:
+    type: bool
+    group: ai
+    subgroup: "V1.1 · 总开关"
+    label: "启用 AI 观察（V1.1）"
+    help: "关闭时所有 AI 层均不会调用 LLM，前端 AI 卡将隐藏"
+    danger: true
+    tier: basic
+  ai.provider:
+    type: enum
+    options: ["deepseek", "stub"]
+    group: ai
+    subgroup: "V1.1 · 模型源"
+    label: "AI 服务商"
+    help: "deepseek：在线调用 DeepSeek V4；stub：不调用真 API（离线/本地测试）"
+    tier: basic
+  ai.api_key:
+    type: string
+    format: secret
+    group: ai
+    subgroup: "V1.1 · 模型源"
+    label: "DeepSeek API Key"
+    help: "粘贴 sk-…；保存后仅以 mask 形态显示，审计日志/诊断接口均脱敏"
+    tier: basic
+  ai.base_url:
+    type: string
+    group: ai
+    subgroup: "V1.1 · 模型源"
+    label: "Base URL"
+    help: "默认 https://api.deepseek.com；私有反代时改为内网地址"
+    tier: expert
+  ai.model_tier:
+    type: enum
+    options: ["flash", "pro"]
+    group: ai
+    subgroup: "V1.1 · 模型源"
+    label: "默认模型"
+    help: "全局单一模型，三层都用它。flash：低成本低延迟，默认选项；pro：强推理高一致但慢 2-3x 且贵"
+    tier: basic
+  ai.thinking_enabled:
+    type: bool
+    group: ai
+    subgroup: "V1.1 · 模型源"
+    label: "启用思维模式"
+    help: "打开 DeepSeek V4 思维链（thinking mode）。注意：官方明确 thinking 与 json_object 互斥，所以开启后会自动关掉强 JSON 约束 + temperature，仅靠 prompt 和解析兜底；响应时间 2-3x、token 消耗 3-5x。推荐只在 pro 模型 + 复杂场景打开"
+    tier: expert
+  ai.flash_model:
+    type: string
+    group: ai
+    subgroup: "V1.1 · 模型源"
+    label: "Flash 具体模型名"
+    help: "默认 deepseek-v4-flash；只有当官方改名或你用私有反代时才需要修改"
+    tier: expert
+  ai.pro_model:
+    type: string
+    group: ai
+    subgroup: "V1.1 · 模型源"
+    label: "Pro 具体模型名"
+    help: "默认 deepseek-v4-pro；只有当官方改名或你用私有反代时才需要修改"
+    tier: expert
+  ai.proxy:
+    type: string
+    group: ai
+    subgroup: "V1.1 · 模型源"
+    label: "代理（可选）"
+    help: "socks5://user:pass@host:port 或 http://host:port"
+    tier: expert
+  ai.observer.min_interval_seconds:
+    type: int
+    min: 30
+    max: 1800
+    step: 30
+    group: ai
+    subgroup: "V1.1 · 触发 / 冷却"
+    label: "最小触发间隔（秒）"
+    help: "两次 AI 触发的最小时间间隔；值越大越省钱"
+    tier: expert
+  ai.observer.cache_ttl_seconds:
+    type: int
+    min: 30
+    max: 1800
+    step: 30
+    group: ai
+    subgroup: "V1.1 · 触发 / 冷却"
+    label: "相同快照缓存 TTL（秒）"
+    help: "同一 anchor_ts 在此窗口内复用结果，不重复调用"
+    tier: expert
+  ai.observer.auto_trade_plan:
+    type: bool
+    group: ai
+    subgroup: "V1.1 · 升级规则"
+    label: "自动生成交易计划"
+    help: "达到置信度阈值时自动运行 L3 交易计划层；关闭则仅由「求交易计划」按钮手动触发。注意：L3 用的模型与 L1/L2 相同（由「默认模型」决定）"
+    tier: basic
+  ai.observer.auto_trend_confidence:
+    type: percent
+    min: 0
+    max: 1
+    step: 0.05
+    group: ai
+    subgroup: "V1.1 · 升级规则"
+    label: "趋势置信度阈值"
+    help: "L1 趋势分类置信度 ≥ 此值，才满足自动升级条件之一"
+    tier: basic
+  ai.observer.auto_money_flow_confidence:
+    type: percent
+    min: 0
+    max: 1
+    step: 0.05
+    group: ai
+    subgroup: "V1.1 · 升级规则"
+    label: "资金面置信度阈值"
+    help: "L2 资金解读置信度 ≥ 此值，才满足自动升级条件之二"
+    tier: expert
+  ai.observer.timeout_s_flash:
+    type: number
+    min: 5
+    max: 60
+    step: 1
+    group: ai
+    subgroup: "V1.1 · 超时 / 温度"
+    label: "Flash 层超时（秒）"
+    tier: expert
+  ai.observer.timeout_s_pro:
+    type: number
+    min: 5
+    max: 90
+    step: 1
+    group: ai
+    subgroup: "V1.1 · 超时 / 温度"
+    label: "Pro 层超时（秒）"
+    tier: expert
+  ai.observer.temperature_flash:
+    type: number
+    min: 0
+    max: 1
+    step: 0.05
+    group: ai
+    subgroup: "V1.1 · 超时 / 温度"
+    label: "Flash 层温度"
+    help: "值越小越稳定；推荐 0.15–0.3"
+    tier: expert
+  ai.observer.temperature_pro:
+    type: number
+    min: 0
+    max: 1
+    step: 0.05
+    group: ai
+    subgroup: "V1.1 · 超时 / 温度"
+    label: "Pro 层温度"
+    tier: expert
+  ai.storage.history_ring_size:
+    type: int
+    min: 10
+    max: 500
+    step: 10
+    group: ai
+    subgroup: "V1.1 · 存储"
+    label: "内存历史条数"
+    help: "REST / WS 能直接拿到的最近 N 条 AI 观察"
+    tier: expert
+  ai.storage.jsonl_relpath:
+    type: string
+    group: ai
+    subgroup: "V1.1 · 存储"
+    label: "JSONL 相对路径"
+    help: "相对 backend/ 的落盘文件；所有观察会 append-only 写入供审计/回放"
+    tier: expert
+
   # ─── 系统 ───
   global.lookback_bars:
     type: int
@@ -658,6 +1023,7 @@ items:
     subgroup: "特征窗口"
     label: "历史回溯根数"
     danger: true
+    tier: basic
   global.recent_window_bars:
     type: int
     min: 2
@@ -666,6 +1032,7 @@ items:
     group: system
     subgroup: "特征窗口"
     label: "最近事件窗口"
+    tier: basic
   global.near_price_pct:
     type: percent
     min: 0.001
@@ -674,6 +1041,15 @@ items:
     group: system
     subgroup: "定位精度"
     label: "贴近阈值 ±%"
+  global.band_topn:
+    type: int
+    min: 1
+    max: 15
+    step: 1
+    group: system
+    subgroup: "数字化展示"
+    label: "💣 / 散户带多空各显示条数"
+    tier: basic
 
   # ─── UI 偏好 ───
   ui.refresh_ms:
@@ -684,22 +1060,51 @@ items:
     group: ui
     subgroup: "刷新"
     label: "刷新间隔 (ms)"
+    tier: basic
   ui.theme:
     type: enum
-    options: ["dark", "light"]
+    options: ["command_center", "dark", "light"]
     group: ui
     subgroup: "外观"
     label: "主题"
+    help: "command_center = 作战指挥大屏（偏赛博青蓝），dark/light 为经典主题"
+    tier: basic
+  ui.theme_primary_hex:
+    type: string
+    format: color
+    group: ui
+    subgroup: "外观"
+    label: "作战主色"
+    help: "用于 command_center 主题的高亮主色（按钮、标注、当前价刻度）"
+    tier: basic
+  ui.theme_accent_hex:
+    type: string
+    format: color
+    group: ui
+    subgroup: "外观"
+    label: "辅助蓝"
+    help: "用于次要标签、坐标角标、分隔线"
+    tier: basic
+  ui.theme_background_hex:
+    type: string
+    format: color
+    group: ui
+    subgroup: "外观"
+    label: "背景色"
+    help: "大屏底色（深海黑蓝最有指挥屏质感）"
+    tier: basic
   ui.cards.main_force_radar:
     type: bool
     group: ui
     subgroup: "卡片显隐"
     label: "主力行为雷达"
+    tier: basic
   ui.cards.phase_state_machine:
     type: bool
     group: ui
     subgroup: "卡片显隐"
     label: "趋势阶段状态机"
+    tier: basic
   ui.cards.participation:
     type: bool
     group: ui
@@ -720,3 +1125,4 @@ items:
     group: ui
     subgroup: "卡片显隐"
     label: "交易建议"
+    tier: basic

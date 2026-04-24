@@ -73,7 +73,8 @@ def _check_labels(
     dis = caps["distribution"].score
     brk = caps["breakout"].score
 
-    # accumulate / distribute
+    # accumulate / distribute —— 这两条 label 不在 _LABEL_TO_ALERT 里，不直接产 alert；
+    # 仅保留 hit 供将来扩展（例如做对比埋点）。
     cfg_acc = (labels_cfg.get("accumulate") or {}).get("require", {})
     if acc >= float(cfg_acc.get("accumulation_score_gte", 60)) and dis < float(
         cfg_acc.get("distribution_score_lt", 30)
@@ -112,24 +113,49 @@ def _check_labels(
     ):
         hits.append(("dump", min(100, int(brk + snap.resonance_sell_count * 3))))
 
-    # bull_trap / bear_trap —— 刚穿越 + whale 反方向 + power_imbalance 反向
-    pi_reverse_hit = snap.power_imbalance_last is not None and snap.power_imbalance_last.ratio >= 1.5
-    if snap.just_broke_resistance and snap.whale_net_direction == "sell" and pi_reverse_hit:
+    # bull_trap / bear_trap —— 刚穿越 + whale 反方向 + 同方向的 power_imbalance 碾压
+    # 即：向上穿越时，如果主力 whale=sell 且 sell 侧 power_imbalance 放大 → 诱多。
+    pi_buy_hit = (
+        snap.power_imbalance_last is not None
+        and snap.power_imbalance_last.ratio >= 1.5
+        and snap.power_imbalance_streak_side == "buy"
+    )
+    pi_sell_hit = (
+        snap.power_imbalance_last is not None
+        and snap.power_imbalance_last.ratio >= 1.5
+        and snap.power_imbalance_streak_side == "sell"
+    )
+    if snap.just_broke_resistance and snap.whale_net_direction == "sell" and pi_sell_hit:
         hits.append(("bull_trap", 75))
-    if snap.just_broke_support and snap.whale_net_direction == "buy" and pi_reverse_hit:
+    if snap.just_broke_support and snap.whale_net_direction == "buy" and pi_buy_hit:
         hits.append(("bear_trap", 75))
 
-    # exhausted —— exhaustion 高 + saturation 高
+    # exhausted —— exhaustion 连续高 + saturation 高
+    # 满足官方"连续 3 根 ≥ 阈" 才更可信；saturation 用 ts.progress。
     cfg_ex = (labels_cfg.get("exhausted") or {}).get("require", {})
-    ex_th = int(cfg_ex.get("exhaustion_gte", 7))
+    ex_th = float(cfg_ex.get("exhaustion_gte", 7))
     sat_th = float(cfg_ex.get("saturation_gte", 70))
+    consec_min = int(cfg_path(cfg, "capabilities.reversal.thresholds.exhaustion_consecutive_min", 3))
     te = snap.trend_exhaustion_last
     ts = snap.trend_saturation
-    if te and te.exhaustion >= ex_th and ts and ts.progress >= sat_th:
+    if (
+        te is not None
+        and te.exhaustion >= ex_th
+        and snap.exhaustion_streak >= consec_min
+        and ts is not None
+        and ts.progress >= sat_th
+    ):
         hits.append(("exhausted", min(100, int(te.exhaustion * 10 + (ts.progress - sat_th)))))
 
-    # brewing —— cvd 收敛 + 真空带近 + 活跃时段
-    cvd_converge = snap.cvd_slope is not None and abs(snap.cvd_slope) < 1e6  # 粗阈值
+    # brewing —— cvd 归一化后收敛 + 真空带近 + 活跃时段
+    # cvd_converge_ratio = |cvd_slope| / cvd_range ∈ [0, 1]，
+    # 口径跨币种/跨 tf 可比，不再依赖魔法数字 1e6。
+    max_ratio = float(
+        cfg_path(cfg, "main_force_radar.labels.brewing.cvd_converge_max_ratio", 0.2)
+    )
+    cvd_converge = (
+        snap.cvd_converge_ratio is not None and snap.cvd_converge_ratio <= max_ratio
+    )
     vacuum_near = any(v.low <= snap.last_price * 1.01 and v.high >= snap.last_price * 0.99 for v in snap.vacuums)
     if cvd_converge and vacuum_near and snap.active_session:
         hits.append(("brewing", 65))

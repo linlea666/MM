@@ -12,17 +12,24 @@ from backend.core.logging import Tags, get_logger
 from backend.core.time_utils import iso_to_ms
 from backend.models import (
     AbsoluteZone,
+    CascadeBand,
+    ChochEvent,
+    DdToleranceSegment,
     HeatmapBand,
     HvnNode,
     LiquidationFuelBand,
     LiquiditySweepEvent,
     MicroPocSegment,
     OrderBlock,
+    PainDrawdownSegment,
     PocShiftPoint,
     PowerImbalancePoint,
     ResonanceEvent,
+    RetailStopBand,
+    RoiSegment,
     SmartMoneySegment,
     TimeHeatmapHour,
+    TimeWindowSegment,
     TrailingVwapPoint,
     TrendExhaustionPoint,
     TrendPuritySegment,
@@ -37,7 +44,7 @@ from .base import (
     _safe_dict,
     _safe_list,
 )
-from .shared import merge_result, parse_shared_series
+from .shared import parse_shared_series
 
 logger = get_logger("collector.parser")
 
@@ -528,27 +535,256 @@ def parse_hvn_nodes(symbol: str, tf: str, payload: dict) -> ParserResult:
     return result
 
 
+# ════════════════ V1.1 扩展（7 个新指标） ════════════════
+# 所有 7 个端点每次返回全量历史 → 一律用 replace_for 刷新当前 (symbol, tf)
+# 避免"旧段已被官方重算但库里还留着"的污染。
+
+
+_CHOCH_TYPES = {"CHoCH_Bullish", "CHoCH_Bearish", "BOS_Bullish", "BOS_Bearish"}
+
+
+def parse_inst_choch(symbol: str, tf: str, payload: dict) -> ParserResult:
+    """机构 CHoCH/BOS 事件：顶层 key = ``inst_choch``。"""
+    result = ParserResult()
+    events: list = []
+    for row in _safe_list(payload, "inst_choch"):
+        if not isinstance(row, dict):
+            continue
+        try:
+            t = str(row["type"])
+            if t not in _CHOCH_TYPES:
+                # 未知类型直接丢弃，不让坏数据污染表
+                _skip("choch", symbol, "inst_choch", "unknown_type",
+                      ValueError(t))
+                continue
+            events.append(
+                ChochEvent(
+                    symbol=symbol,
+                    tf=tf,
+                    ts=_as_int_ms(row["timestamp"]),
+                    price=float(row["price"]),
+                    level_price=float(row["level_price"]),
+                    origin_ts=_as_int_ms(row["origin_ts"]),
+                    type=t,
+                )
+            )
+        except (KeyError, TypeError, ValueError) as e:
+            _skip("choch", symbol, "inst_choch", "row_invalid", e)
+    result.replace("choch_events", {"symbol": symbol, "tf": tf}, events)
+    return result
+
+
+def parse_trend_roi_exhaustion(symbol: str, tf: str, payload: dict) -> ParserResult:
+    """未来收益预期：顶层 key = ``trend_roi_exhaustion``。"""
+    result = ParserResult()
+    segs: list = []
+    for row in _safe_list(payload, "trend_roi_exhaustion"):
+        if not isinstance(row, dict):
+            continue
+        try:
+            segs.append(
+                RoiSegment(
+                    symbol=symbol,
+                    tf=tf,
+                    start_time=_as_int_ms(row["start_time"]),
+                    end_time=_as_int_ms(row["end_time"]),
+                    avg_price=float(row["avg_price"]),
+                    limit_avg_price=float(row["limit_avg_price"]),
+                    limit_max_price=float(row["limit_max_price"]),
+                    type=str(row["type"]),
+                    status=str(row.get("status") or "Completed"),
+                )
+            )
+        except (KeyError, TypeError, ValueError) as e:
+            _skip("roi", symbol, "trend_roi_exhaustion", "row_invalid", e)
+    result.replace("roi_segments", {"symbol": symbol, "tf": tf}, segs)
+    return result
+
+
+def parse_max_pain_drawdown(symbol: str, tf: str, payload: dict) -> ParserResult:
+    """极限洗盘深度：顶层 key = ``max_pain_drawdown``。"""
+    result = ParserResult()
+    segs: list = []
+    for row in _safe_list(payload, "max_pain_drawdown"):
+        if not isinstance(row, dict):
+            continue
+        try:
+            segs.append(
+                PainDrawdownSegment(
+                    symbol=symbol,
+                    tf=tf,
+                    start_time=_as_int_ms(row["start_time"]),
+                    end_time=_as_int_ms(row["end_time"]),
+                    avg_price=float(row["avg_price"]),
+                    pain_avg_price=float(row["pain_avg_price"]),
+                    pain_max_price=float(row["pain_max_price"]),
+                    type=str(row["type"]),
+                    status=str(row.get("status") or "Completed"),
+                )
+            )
+        except (KeyError, TypeError, ValueError) as e:
+            _skip("pain", symbol, "max_pain_drawdown", "row_invalid", e)
+    result.replace("pain_drawdown", {"symbol": symbol, "tf": tf}, segs)
+    return result
+
+
+def parse_time_exhaustion_window(symbol: str, tf: str, payload: dict) -> ParserResult:
+    """趋势时间极限：顶层 key = ``time_exhaustion_window``。"""
+    result = ParserResult()
+    segs: list = []
+    for row in _safe_list(payload, "time_exhaustion_window"):
+        if not isinstance(row, dict):
+            continue
+        try:
+            segs.append(
+                TimeWindowSegment(
+                    symbol=symbol,
+                    tf=tf,
+                    start_time=_as_int_ms(row["start_time"]),
+                    end_time=_as_int_ms(row["end_time"]),
+                    last_update_time=_as_int_ms(row["last_update_time"]),
+                    avg_price=float(row["avg_price"]),
+                    limit_avg_time=_as_int_ms(row["limit_avg_time"]),
+                    limit_max_time=_as_int_ms(row["limit_max_time"]),
+                    type=str(row["type"]),
+                    status=str(row.get("status") or "Completed"),
+                )
+            )
+        except (KeyError, TypeError, ValueError) as e:
+            _skip("time_win", symbol, "time_exhaustion_window", "row_invalid", e)
+    result.replace("time_windows", {"symbol": symbol, "tf": tf}, segs)
+    return result
+
+
+def parse_max_drawdown_tolerance(symbol: str, tf: str, payload: dict) -> ParserResult:
+    """涨跌极限 / 移动护城河：顶层 key = ``max_drawdown_tolerance``。
+
+    ``trailing_line`` / ``pierces`` 形式是 ``[[ts, price], ...]``。
+    坏行（非二元数组）过滤，避免坏数据打穿 JSON 列。
+    """
+    result = ParserResult()
+    segs: list = []
+    for row in _safe_list(payload, "max_drawdown_tolerance"):
+        if not isinstance(row, dict):
+            continue
+        try:
+            trailing = _normalize_pairs(row.get("trailing_line"))
+            pierces = _normalize_pairs(row.get("pierces"))
+            segs.append(
+                DdToleranceSegment(
+                    symbol=symbol,
+                    tf=tf,
+                    id=int(row["id"]),
+                    start_time=_as_int_ms(row["start_time"]),
+                    end_time=_as_int_ms(row["end_time"]),
+                    limit_pct=float(row["limit_pct"]),
+                    status=str(row.get("status") or "Completed"),
+                    trailing_line=trailing,
+                    pierces=pierces,
+                )
+            )
+        except (KeyError, TypeError, ValueError) as e:
+            _skip("dd_tol", symbol, "max_drawdown_tolerance", "row_invalid", e)
+    result.replace("dd_tolerance", {"symbol": symbol, "tf": tf}, segs)
+    return result
+
+
+def _normalize_pairs(raw: Any) -> list[list[float]]:
+    """把 ``[[ts, price], ...]`` 清洗成 ``list[list[float]]``，坏行跳过。"""
+    out: list[list[float]] = []
+    if not isinstance(raw, list):
+        return out
+    for pair in raw:
+        if not isinstance(pair, list) or len(pair) < 2:
+            continue
+        try:
+            out.append([float(pair[0]), float(pair[1])])
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def parse_cascade_liquidation(symbol: str, tf: str, payload: dict) -> ParserResult:
+    """连环爆仓区：顶层 key = ``order_blocks``（字段同构 trend_price 但语义不同）。"""
+    result = ParserResult()
+    bands: list = []
+    for row in _safe_list(payload, "order_blocks"):
+        if not isinstance(row, dict):
+            continue
+        try:
+            bands.append(
+                CascadeBand(
+                    symbol=symbol,
+                    tf=tf,
+                    start_time=_as_int_ms(row["start_time"]),
+                    bottom_price=float(row["bottom_price"]),
+                    top_price=float(row["top_price"]),
+                    avg_price=float(row["avg_price"]),
+                    volume=float(row["volume"]),
+                    signal_count=int(row.get("signal_count") or 0),
+                    type=str(row["type"]),
+                )
+            )
+        except (KeyError, TypeError, ValueError) as e:
+            _skip("cascade", symbol, "cascade_liquidation", "row_invalid", e)
+    result.replace("cascade_bands", {"symbol": symbol, "tf": tf}, bands)
+    return result
+
+
+def parse_retail_stop_loss(symbol: str, tf: str, payload: dict) -> ParserResult:
+    """散户止损点：顶层 key = ``order_blocks``（比 cascade 少 signal_count）。"""
+    result = ParserResult()
+    bands: list = []
+    for row in _safe_list(payload, "order_blocks"):
+        if not isinstance(row, dict):
+            continue
+        try:
+            bands.append(
+                RetailStopBand(
+                    symbol=symbol,
+                    tf=tf,
+                    start_time=_as_int_ms(row["start_time"]),
+                    bottom_price=float(row["bottom_price"]),
+                    top_price=float(row["top_price"]),
+                    avg_price=float(row["avg_price"]),
+                    volume=float(row["volume"]),
+                    type=str(row["type"]),
+                )
+            )
+        except (KeyError, TypeError, ValueError) as e:
+            _skip("retail", symbol, "retail_stop_loss", "row_invalid", e)
+    result.replace("retail_stop_bands", {"symbol": symbol, "tf": tf}, bands)
+    return result
+
+
 __all__ = [
     "parse_absolute_zones",
+    "parse_cascade_liquidation",
     "parse_cross_exchange_resonance",
     "parse_fair_value",
     "parse_fvg",
     "parse_hvn_nodes",
     "parse_imbalance",
+    "parse_inst_choch",
     "parse_inst_volume_profile",
     "parse_liq_heatmap",
     "parse_liq_vacuum",
     "parse_liquidation_fuel",
     "parse_liquidity_sweep",
+    "parse_max_drawdown_tolerance",
+    "parse_max_pain_drawdown",
     "parse_micro_poc",
     "parse_ob_decay",
     "parse_poc_shift",
     "parse_power_imbalance",
+    "parse_retail_stop_loss",
     "parse_smart_money_cost",
+    "parse_time_exhaustion_window",
     "parse_time_heatmap",
     "parse_trailing_vwap",
     "parse_trend_exhaustion",
     "parse_trend_price",
     "parse_trend_purity",
+    "parse_trend_roi_exhaustion",
     "parse_trend_saturation",
 ]

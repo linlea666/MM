@@ -13,8 +13,9 @@
 
 from __future__ import annotations
 
+import logging
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from backend.core.exceptions import NoDataError
 from backend.models import (
@@ -26,7 +27,14 @@ from backend.models import (
 from backend.storage.db import Database
 
 from .features import FeatureExtractor, FeatureSnapshot
+
+if TYPE_CHECKING:
+    # 懒引用，避免循环：backend.ai → backend.rules.features → ...
+    from backend.ai.observer import AIObserver
+
+logger = logging.getLogger("rules.runner")
 from .modules import (
+    build_dashboard_cards,
     build_hero,
     build_key_levels,
     build_liquidity_map,
@@ -63,7 +71,10 @@ def _build_timeline(snap: FeatureSnapshot, *, limit: int = 8) -> list[TimelineEv
             TimelineEvent(
                 ts=sw.ts, kind="sweep",
                 headline=f"{dir_cn} @ {sw.price}",
-                detail=f"type={sw.type} volume={round(sw.volume, 2)} 近 N 根累计 {snap.sweep_count_recent} 次",
+                detail=(
+                    f"type={sw.type} volume={round(sw.volume, 2)} "
+                    f"事件窗累计 {snap.sweep_count_recent} 次"
+                ),
                 severity="warning",
             )
         )
@@ -188,10 +199,17 @@ class RuleRunner:
         config: dict[str, Any] | None = None,
         *,
         feature_extractor: FeatureExtractor | None = None,
+        ai_observer: "AIObserver | None" = None,
     ) -> None:
         self._db = db
         self._config = config or {}
         self._ext = feature_extractor or FeatureExtractor(db, config=self._config)
+        # AI 观察器（V1.1 · Phase 9）：可选注入；为空时主流程不受影响
+        self._ai_observer = ai_observer
+
+    def set_ai_observer(self, observer: "AIObserver | None") -> None:
+        """运行时注入 observer（lifespan 可在其他依赖就绪后再注入）。"""
+        self._ai_observer = observer
 
     async def run(self, symbol: str, tf: str) -> DashboardSnapshot:
         """跑完整流水线，返回 DashboardSnapshot。
@@ -205,7 +223,21 @@ class RuleRunner:
                 f"{symbol}/{tf} 无可用数据",
                 detail={"symbol": symbol, "tf": tf},
             )
-        return self._assemble(snap)
+        dashboard = self._assemble(snap)
+        # 非阻塞地触发 AI 观察（observer 内部有节流/冷却/disabled 判断，不会连发）
+        if self._ai_observer is not None:
+            try:
+                await self._ai_observer.run_async(snap, trigger="scheduled")
+                # 附带最新一条 summary（可能是上一根 K 线的）到 snapshot
+                summary = await self._ai_observer.latest_summary(snap)
+                if summary is not None:
+                    dashboard = dashboard.model_copy(update={"ai": summary})
+            except Exception as e:  # noqa: BLE001 - 观察层绝不允许污染主路径
+                logger.debug(
+                    f"ai observer non-fatal: {e}",
+                    extra={"tags": ["AI"], "context": {"symbol": symbol, "tf": tf}},
+                )
+        return dashboard
 
     def _assemble(self, snap: FeatureSnapshot) -> DashboardSnapshot:
         cfg = self._config
@@ -227,9 +259,14 @@ class RuleRunner:
         levels = build_key_levels(snap, cfg)
         liquidity = build_liquidity_map(snap, cfg)
         plans = build_trade_plan(snap, caps_internal, phase, participation, cfg)
+        choch_alert_bars = int(
+            (cfg or {}).get("hero", {}).get("choch_alert_bars", 3)
+        )
         hero = build_hero(
             behavior=behavior, phase=phase, participation=participation,
             levels=levels, liquidity=liquidity, plans=plans,
+            choch_latest=snap.choch_latest,
+            choch_alert_bars=choch_alert_bars,
         )
 
         # 3) timeline / capability_scores / health
@@ -237,6 +274,9 @@ class RuleRunner:
         cap_dtos = [_to_capability_dto(caps_internal[n]) for n in
                     ("accumulation", "distribution", "breakout", "reversal")]
         health = _build_health(snap)
+
+        # 4) V1.1 · 数字化白话卡（view → card 直出）
+        cards = build_dashboard_cards(snap, cfg)
 
         return DashboardSnapshot(
             timestamp=snap.anchor_ts,
@@ -254,6 +294,7 @@ class RuleRunner:
             capability_scores=cap_dtos,
             recent_events=timeline,
             health=health,
+            cards=cards,
         )
 
 

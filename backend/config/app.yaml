@@ -34,32 +34,43 @@ collector:
     primary: "binance"
     fallback: ["okx"]
 
+  # 调度按 docs/upstream-api/README.md §4.3-4.4 去重后 + V1.1 扩展 7 个。
+  # - Series 家族（fair_value/fvg/imbalance/liquidity_sweep/micro_poc/poc_shift）
+  #   共享 cvd_series/imbalance_series/inst_vol_series/vwap_series 载荷，
+  #   只拉 liquidity_sweep + micro_poc + poc_shift 即覆盖全部 6 个
+  # - OrderBlocks 家族（trend_price/ob_decay）共享 order_blocks[] 载荷，
+  #   只拉 trend_price 即覆盖 ob_decay
+  # - cascade_liquidation / retail_stop_loss 顶层 key 也叫 order_blocks，
+  #   但语义完全不同（爆仓区 vs 吸筹带），必须独立抓取
   schedule:
     kline_close:                    # K 线收盘后 5 秒触发
       - power_imbalance
       - trailing_vwap
       - trend_exhaustion
-      - liquidity_sweep
-      - micro_poc
-      - poc_shift
+      - liquidity_sweep             # 同时白送 fair_value/fvg/imbalance 的 4 系列
+      - micro_poc                   # Series 家族成员
+      - poc_shift                   # Series 家族成员
       - cross_exchange_resonance
-      - fair_value                  # 4 系列权威源
+      - inst_choch                  # V1.1：事件型，反转/突破需要尽快响应
     every_5min:
       - trend_saturation
     every_30min:
       - smart_money_cost
-      - trend_price
+      - trend_price                 # 同时白送 ob_decay 的 order_blocks[]
       - trend_purity
       - absolute_zones
-      - ob_decay
-      - fvg
-      - imbalance
+      - trend_roi_exhaustion        # V1.1：波段四维（目标价）
+      - max_pain_drawdown           # V1.1：波段四维（洗盘容忍）
+      - time_exhaustion_window      # V1.1：波段四维（时间死亡线）
+      - max_drawdown_tolerance      # V1.1：波段四维（移动护城河）
     every_1h:
       - liq_heatmap
       - liq_vacuum
       - liquidation_fuel
       - hvn_nodes
       - inst_volume_profile
+      - cascade_liquidation         # V1.1：连环爆仓区（价位带）
+      - retail_stop_loss            # V1.1：散户止损带（价位带）
     every_4h:
       - time_heatmap
 

@@ -63,6 +63,8 @@ LevelSourceKind = Literal[
     "trend_price",
     "trailing_vwap",
     "heatmap",
+    "cascade_band",        # V1.1 · 💣 机构连环爆仓带（雷区插针反向接针）
+    "retail_band",         # V1.1 · 散户止损带（磁吸方向/破位追单）
 ]
 
 

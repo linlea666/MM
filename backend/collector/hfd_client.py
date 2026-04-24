@@ -21,8 +21,9 @@ from .rate_limiter import TokenBucket
 
 logger = get_logger("collector.hfd_client")
 
-# HFD 所有有效 indicator 名
+# HFD 所有有效 indicator 名（已纳入主链路：parser/schema/features/rules）
 HFD_INDICATORS: tuple[str, ...] = (
+    # V1 主链路（22 个）
     "smart_money_cost",
     "liq_heatmap",
     "absolute_zones",
@@ -45,6 +46,23 @@ HFD_INDICATORS: tuple[str, ...] = (
     "hvn_nodes",
     "liquidity_sweep",
     "time_heatmap",
+    # V1.1 扩展（7 个，与 V1 同一个 HFD endpoint）
+    "cascade_liquidation",        # 连环爆仓区（💣 / 💥）
+    "retail_stop_loss",           # 散户止损点（深浅带 + 截断）
+    "max_pain_drawdown",          # 极限洗盘深度
+    "trend_roi_exhaustion",       # 未来收益预期（目标线/极限线）
+    "max_drawdown_tolerance",     # 涨跌极限（移动护城河 + 📌）
+    "time_exhaustion_window",     # 趋势时间极限（虚线/死亡线）
+    "inst_choch",                 # 机构 CHoCH 破坏与突破（⚡）
+)
+
+# 实验性/探针指标占位：目前为空，新指标抓到真实 payload 并通过 parser/schema
+# 全链路验收后即从这里晋升到 HFD_INDICATORS。
+EXPERIMENTAL_INDICATORS: tuple[str, ...] = ()
+
+# 统一白名单：主链路 + 实验性。用于 fetch 校验。
+_ALLOWED_INDICATORS: frozenset[str] = frozenset(
+    HFD_INDICATORS + EXPERIMENTAL_INDICATORS
 )
 
 
@@ -99,7 +117,7 @@ class HFDClient:
         tf: str,
     ) -> dict[str, Any]:
         """拉取一个 endpoint。失败时抛 HFDError。"""
-        if indicator not in HFD_INDICATORS:
+        if indicator not in _ALLOWED_INDICATORS:
             raise HFDError(f"未知 indicator: {indicator}")
         if self._client is None:
             await self.start()

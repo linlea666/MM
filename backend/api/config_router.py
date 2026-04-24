@@ -17,12 +17,14 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
+from backend.ai.config import mask_secret
 from backend.core.logging import Tags
 from backend.core.rules_config import RulesConfigService
 from backend.storage.repositories import ConfigRepository
@@ -30,6 +32,75 @@ from backend.storage.repositories import ConfigRepository
 logger = logging.getLogger("api.config")
 
 router = APIRouter(prefix="/api/config", tags=["config"])
+
+
+# ─── Secret mask helpers ──────────────────────────────────
+
+def _secret_keys(meta_items: dict[str, Any]) -> set[str]:
+    """枚举 meta.yaml 里所有 ``format: "secret"`` 的 key 路径。"""
+    return {
+        k for k, m in meta_items.items()
+        if isinstance(m, dict) and m.get("format") == "secret"
+    }
+
+
+def _set_nested(data: dict[str, Any], key_path: str, value: Any) -> None:
+    """按点分路径写入嵌套 dict；中间缺失的节点跳过（不新建）。"""
+    parts = key_path.split(".")
+    cursor: Any = data
+    for p in parts[:-1]:
+        if not isinstance(cursor, dict) or p not in cursor:
+            return
+        cursor = cursor[p]
+    if isinstance(cursor, dict) and parts[-1] in cursor:
+        cursor[parts[-1]] = value
+
+
+def _mask_values_tree(values: dict[str, Any], secret_keys: set[str]) -> dict[str, Any]:
+    """给嵌套 values 树里所有 secret 字段替换成 mask 形态（原地深拷贝）。"""
+    masked = copy.deepcopy(values)
+    for key in secret_keys:
+        try:
+            parts = key.split(".")
+            cursor: Any = masked
+            ok = True
+            for p in parts[:-1]:
+                if not isinstance(cursor, dict) or p not in cursor:
+                    ok = False
+                    break
+                cursor = cursor[p]
+            if ok and isinstance(cursor, dict) and parts[-1] in cursor:
+                cursor[parts[-1]] = mask_secret(str(cursor[parts[-1]] or ""))
+        except Exception:  # noqa: BLE001
+            continue
+    return masked
+
+
+def _mask_overrides_list(
+    overrides: list[dict[str, Any]], secret_keys: set[str]
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for row in overrides:
+        r = dict(row)
+        if r.get("key") in secret_keys and "value" in r:
+            r["value"] = mask_secret(str(r.get("value") or ""))
+        out.append(r)
+    return out
+
+
+def _mask_audit_list(
+    rows: list[dict[str, Any]], secret_keys: set[str]
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        r = dict(row)
+        if r.get("key") in secret_keys:
+            if "old_value" in r:
+                r["old_value"] = mask_secret(str(r.get("old_value") or ""))
+            if "new_value" in r:
+                r["new_value"] = mask_secret(str(r.get("new_value") or ""))
+        out.append(r)
+    return out
 
 
 # ─── 依赖 ─────────────────────────────────────────────────
@@ -84,12 +155,15 @@ async def get_config(request: Request) -> dict[str, Any]:
 
     - ``values``   嵌套 dict：default + override 合并后的运行真理源
     - ``overrides`` 数组：每条带 value_type / updated_at / updated_by / reason
+
+    V1.1 · Phase 9：所有 ``format: "secret"`` 字段在 values / overrides 中 mask。
     """
     svc = _svc(request)
     overrides = await _repo(request).list_raw()
+    secret_keys = _secret_keys(svc.meta()["items"])
     return {
-        "values": svc.snapshot(),
-        "overrides": overrides,
+        "values": _mask_values_tree(svc.snapshot(), secret_keys),
+        "overrides": _mask_overrides_list(overrides, secret_keys),
     }
 
 
@@ -100,6 +174,9 @@ async def get_audit(
     limit: int = Query(100, ge=1, le=500),
 ) -> dict[str, Any]:
     rows = await _repo(request).list_audit(key=key, limit=limit)
+    svc = _svc(request)
+    secret_keys = _secret_keys(svc.meta()["items"])
+    rows = _mask_audit_list(rows, secret_keys)
     return {"items": rows, "total": len(rows)}
 
 
@@ -174,7 +251,10 @@ async def patch_config(
 
 @router.get("/item/{key:path}")
 async def get_config_item(request: Request, key: str) -> dict[str, Any]:
-    """单项详情：当前运行值 + 出厂默认值 + 是否被 override + 该项的 meta。"""
+    """单项详情：当前运行值 + 出厂默认值 + 是否被 override + 该项的 meta。
+
+    V1.1 · Phase 9：若该项 ``format=="secret"``，value 与 override_value 返回 mask。
+    """
     svc = _svc(request)
     if not svc.is_tier1(key):
         raise HTTPException(
@@ -183,10 +263,16 @@ async def get_config_item(request: Request, key: str) -> dict[str, Any]:
         )
     meta = svc.meta()["items"].get(key)
     override = await _repo(request).get(key)
+    value: Any = svc.get(key)
+    override_value = override
+    if isinstance(meta, dict) and meta.get("format") == "secret":
+        value = mask_secret(str(value or ""))
+        if override_value is not None:
+            override_value = mask_secret(str(override_value or ""))
     return {
         "key": key,
-        "value": svc.get(key),
+        "value": value,
         "is_overridden": override is not None,
-        "override_value": override,
+        "override_value": override_value,
         "meta": meta,
     }
