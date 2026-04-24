@@ -78,27 +78,33 @@ pytest -v
 
 ## 部署
 
-详见 [`docs/dashboard-v1/DEPLOYMENT.md`](docs/dashboard-v1/DEPLOYMENT.md)。
+- **宝塔面板一步步**：[`docs/DEPLOY-BAOTA.md`](docs/DEPLOY-BAOTA.md)（推荐）
+- **架构设计**：[`docs/dashboard-v1/DEPLOYMENT.md`](docs/dashboard-v1/DEPLOYMENT.md)
 
 ```bash
-cd deploy
-docker compose up -d --build
+# 服务器上
+cd /www/mm
+cp deploy/.env.example deploy/.env  # 填 DEEPSEEK_API_KEY 等
+./scripts/deploy.sh                  # 一键拉代码 + 构建 + 启动 + 健康检查
 ```
 
-访问 http://your-server:8900
+访问 `http://your-server:8900`
 
 ---
 
 ## 当前进度
 
-V1 规则闭环按 6 步推进：
+V1 规则闭环：
 
 | Step | 内容 | 状态 |
 |------|------|------|
-| 1 | 骨架 + 数据层 | 🟡 进行中 |
-| 2 | 采集器 + 订阅管理 | ⬜ |
-| 3 | 规则引擎（5 能力 + 6 模块） | ⬜ |
-| 4 | API + WS + 日志模块 | ⬜ |
-| 5 | 前端（大屏 + 日志面板） | ⬜ |
-| 6 | 整体联调 + Docker 部署 | ⬜ |
+| 1 | 骨架 + 数据层 | ✅ |
+| 2 | 采集器 + 订阅管理（22 原子 repo + 23 parser + APScheduler） | ✅ |
+| 3 | 规则引擎（6 能力评分 + 6 模块 builder + RuleRunner） | ✅ |
+| 4 | REST + WebSocket + 配置 API + 日志模块 | ✅ |
+| 5 | 前端（大屏 + 订阅 + 配置 + 日志 + WS 实时） | ✅ |
+| 6.1 | Dockerfile + nginx + compose + 备份脚本 | ✅ |
+| 6.2 | 服务器部署联调 | 🟡 进行中 |
 | 7 (V1.1) | AI 观察模式 | ⬜ |
+
+后端测试：178/178 passed · 前端 typecheck + build 均绿。
