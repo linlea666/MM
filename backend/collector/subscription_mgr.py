@@ -54,7 +54,8 @@ class SubscriptionManager:
     # ─── 启动初始化 ───
 
     async def startup(self, default_symbols: list[str]) -> list[Subscription]:
-        """启动时：确保默认币种存在，并为 active=1 的币注册 scheduler jobs。"""
+        """启动时：确保默认币种存在，为 active=1 的币注册 scheduler jobs，
+        并立即触发一次全量采集（避免等下一根 K 线收盘才有数据）。"""
         await self._repo.ensure_defaults(default_symbols)
         active = await self._repo.list_active()
         for sub in active:
@@ -66,6 +67,8 @@ class SubscriptionManager:
                 "context": {"active_symbols": [s.symbol for s in active]},
             },
         )
+        for sub in active:
+            asyncio.create_task(self._safe_collect_once(sub.symbol))
         return active
 
     # ─── CRUD ───

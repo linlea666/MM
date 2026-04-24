@@ -71,15 +71,36 @@ class CollectorEngine:
         await self._fetch_persist_batch(symbol, tf, indicators, tier=tier)
 
     async def collect_once(self, symbol: str, *, tfs: Iterable[str] | None = None) -> dict:
-        """首次添加 / 重新激活时立刻采集一轮（所有 tier）。返回成败统计。"""
+        """首次添加 / 重新激活 / 冷启动时立刻采集一轮（所有 tier）。返回成败统计。"""
         tfs = list(tfs or self._settings.collector.timeframes)
+        logger.info(
+            f"首次全量采集启动 {symbol} tfs={tfs}",
+            extra={
+                "tags": [Tags.TICK],
+                "context": {"symbol": symbol, "tfs": tfs, "phase": "start"},
+            },
+        )
         tasks = []
         for tf in tfs:
             tasks.append(self.tick_kline_close(symbol, tf))
             for tier in ("every_5min", "every_30min", "every_1h", "every_4h"):
                 tasks.append(self.tick_periodic(symbol, tf, tier))
-        await asyncio.gather(*tasks, return_exceptions=True)
-        return {"symbol": symbol, "tfs": tfs}
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        errors = [r for r in results if isinstance(r, Exception)]
+        logger.info(
+            f"首次全量采集完成 {symbol} tasks={len(tasks)} errors={len(errors)}",
+            extra={
+                "tags": [Tags.TICK],
+                "context": {
+                    "symbol": symbol,
+                    "tfs": tfs,
+                    "phase": "done",
+                    "tasks": len(tasks),
+                    "errors": len(errors),
+                },
+            },
+        )
+        return {"symbol": symbol, "tfs": tfs, "tasks": len(tasks), "errors": len(errors)}
 
     # ─── 内部 ───
 
