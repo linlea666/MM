@@ -27,6 +27,7 @@ node_modules/
 .pnpm-store/
 frontend/dist/
 frontend/.vite/
+frontend/*.tsbuildinfo
 *.log
 
 # ─────────── Secrets / runtime ───────────
@@ -43,9 +44,10 @@ config/secrets.yaml
 *.sqlite-shm
 *.sqlite-wal
 *.db
-backend/data/
-backend/logs/
-logs/
+/backend/data/
+/backend/logs/
+/logs/
+/data/
 
 # ─────────── IDE ───────────
 .vscode/
