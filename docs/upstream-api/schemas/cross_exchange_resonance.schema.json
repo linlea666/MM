@@ -1,0 +1,82 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://mm.local/schemas/cross_exchange_resonance.schema.json",
+  "title": "HFD pro_data response: cross_exchange_resonance",
+  "type": "object",
+  "properties": {
+    "cross_exchange_resonance": {
+      "type": "array",
+      "description": "Array of 192 items in sample",
+      "items": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "type": "integer"
+          },
+          "direction": {
+            "type": "string"
+          },
+          "exchanges": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "price": {
+            "type": "number"
+          },
+          "timestamp": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "count",
+          "direction",
+          "exchanges",
+          "price",
+          "timestamp"
+        ]
+      }
+    },
+    "klines": {
+      "type": "array",
+      "description": "Array of 4923 items in sample",
+      "items": {
+        "type": "array",
+        "description": "HFD kline tuple (NON-STANDARD ORDER): [ts, open, close, low, high, volume]",
+        "minItems": 6,
+        "maxItems": 6,
+        "items": [
+          {
+            "type": "integer",
+            "description": "ts (ms epoch, kline open time)"
+          },
+          {
+            "type": "number",
+            "description": "open"
+          },
+          {
+            "type": "number",
+            "description": "close (★ comes before high, unlike Binance/OKX)"
+          },
+          {
+            "type": "number",
+            "description": "low"
+          },
+          {
+            "type": "number",
+            "description": "high"
+          },
+          {
+            "type": "number",
+            "description": "volume"
+          }
+        ]
+      }
+    }
+  },
+  "required": [
+    "cross_exchange_resonance",
+    "klines"
+  ]
+}

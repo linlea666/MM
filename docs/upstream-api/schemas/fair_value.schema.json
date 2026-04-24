@@ -1,0 +1,177 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://mm.local/schemas/fair_value.schema.json",
+  "title": "HFD pro_data response: fair_value",
+  "type": "object",
+  "properties": {
+    "cvd_series": {
+      "type": "array",
+      "description": "Array of 4923 items in sample",
+      "items": {
+        "type": "array",
+        "description": "[ts, value] pair",
+        "minItems": 2,
+        "maxItems": 2,
+        "items": [
+          {
+            "type": "integer",
+            "description": "ts (ms epoch)"
+          },
+          {
+            "type": "number",
+            "description": "value"
+          }
+        ]
+      }
+    },
+    "imbalance_series": {
+      "type": "array",
+      "description": "Array of 4923 items in sample",
+      "items": {
+        "type": "array",
+        "description": "[ts, value] pair",
+        "minItems": 2,
+        "maxItems": 2,
+        "items": [
+          {
+            "type": "integer",
+            "description": "ts (ms epoch)"
+          },
+          {
+            "type": "number",
+            "description": "value"
+          }
+        ]
+      }
+    },
+    "inst_vol_series": {
+      "type": "array",
+      "description": "Array of 4923 items in sample",
+      "items": {
+        "type": "array",
+        "description": "[ts, value] pair",
+        "minItems": 2,
+        "maxItems": 2,
+        "items": [
+          {
+            "type": "integer",
+            "description": "ts (ms epoch)"
+          },
+          {
+            "type": "number",
+            "description": "value"
+          }
+        ]
+      }
+    },
+    "klines": {
+      "type": "array",
+      "description": "Array of 4923 items in sample",
+      "items": {
+        "type": "array",
+        "description": "HFD kline tuple (NON-STANDARD ORDER): [ts, open, close, low, high, volume]",
+        "minItems": 6,
+        "maxItems": 6,
+        "items": [
+          {
+            "type": "integer",
+            "description": "ts (ms epoch, kline open time)"
+          },
+          {
+            "type": "number",
+            "description": "open"
+          },
+          {
+            "type": "number",
+            "description": "close (★ comes before high, unlike Binance/OKX)"
+          },
+          {
+            "type": "number",
+            "description": "low"
+          },
+          {
+            "type": "number",
+            "description": "high"
+          },
+          {
+            "type": "number",
+            "description": "volume"
+          }
+        ]
+      }
+    },
+    "liquidity_sweep": {
+      "type": "array",
+      "description": "Array of 0 items in sample",
+      "items": {}
+    },
+    "micro_poc": {
+      "type": "array",
+      "description": "Array of 0 items in sample",
+      "items": {}
+    },
+    "order_blocks": {
+      "type": "array",
+      "description": "Array of 0 items in sample",
+      "items": {}
+    },
+    "poc_shift": {
+      "type": "array",
+      "description": "Array of 0 items in sample",
+      "items": {
+        "type": "array",
+        "description": "[ts, poc_price, volume]",
+        "minItems": 3,
+        "maxItems": 3,
+        "items": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "number"
+          },
+          {
+            "type": "number"
+          }
+        ]
+      }
+    },
+    "volume_profile": {
+      "type": "array",
+      "description": "Array of 0 items in sample",
+      "items": {}
+    },
+    "vwap_series": {
+      "type": "array",
+      "description": "Array of 4923 items in sample",
+      "items": {
+        "type": "array",
+        "description": "[ts, value] pair",
+        "minItems": 2,
+        "maxItems": 2,
+        "items": [
+          {
+            "type": "integer",
+            "description": "ts (ms epoch)"
+          },
+          {
+            "type": "number",
+            "description": "value"
+          }
+        ]
+      }
+    }
+  },
+  "required": [
+    "cvd_series",
+    "imbalance_series",
+    "inst_vol_series",
+    "klines",
+    "liquidity_sweep",
+    "micro_poc",
+    "order_blocks",
+    "poc_shift",
+    "volume_profile",
+    "vwap_series"
+  ]
+}

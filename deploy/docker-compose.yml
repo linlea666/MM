@@ -1,0 +1,69 @@
+# MM 作战大屏 —— Docker 编排
+#
+# 部署：
+#   cd deploy && cp .env.example .env && vim .env
+#   docker compose up -d --build
+#
+# 宿主端口（避开现有项目 8800/8801/8686/8787/3000/6060）：
+#   8900 → mm-frontend (Nginx 静态 + 反代)
+#   8901 → mm-backend  (FastAPI REST + WS，合一)
+#
+# 浏览器访问: http://<server>:8900
+
+name: mm
+
+services:
+  mm-backend:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.backend
+    image: mm-backend:latest
+    container_name: mm-backend
+    restart: unless-stopped
+    ports:
+      - "${MM_BACKEND_PORT:-8901}:8901"
+    environment:
+      - TZ=Asia/Shanghai
+      - MM_APP__ENV=production
+      # 数据卷挂载点（在 Dockerfile 中已默认设置，此处显式声明便于覆盖）
+      - MM_DATABASE__PATH=/data/mm.sqlite
+      - MM_LOGGING__FILE__PATH=/logs/mm.log
+      # AI 密钥（V1.1 才启用；V1 可留空）
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+    volumes:
+      - mm-data:/data
+      - mm-logs:/logs
+    networks:
+      - mm-net
+    labels:
+      - "project=mm"
+      - "component=backend"
+
+  mm-frontend:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.frontend
+    image: mm-frontend:latest
+    container_name: mm-frontend
+    restart: unless-stopped
+    ports:
+      - "${MM_FRONTEND_PORT:-8900}:80"
+    depends_on:
+      mm-backend:
+        condition: service_started
+    networks:
+      - mm-net
+    labels:
+      - "project=mm"
+      - "component=frontend"
+
+networks:
+  mm-net:
+    name: mm-net
+    driver: bridge
+
+volumes:
+  mm-data:
+    name: mm-data
+  mm-logs:
+    name: mm-logs

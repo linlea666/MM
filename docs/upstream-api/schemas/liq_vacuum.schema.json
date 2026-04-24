@@ -1,0 +1,66 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://mm.local/schemas/liq_vacuum.schema.json",
+  "title": "HFD pro_data response: liq_vacuum",
+  "type": "object",
+  "properties": {
+    "klines": {
+      "type": "array",
+      "description": "Array of 4923 items in sample",
+      "items": {
+        "type": "array",
+        "description": "HFD kline tuple (NON-STANDARD ORDER): [ts, open, close, low, high, volume]",
+        "minItems": 6,
+        "maxItems": 6,
+        "items": [
+          {
+            "type": "integer",
+            "description": "ts (ms epoch, kline open time)"
+          },
+          {
+            "type": "number",
+            "description": "open"
+          },
+          {
+            "type": "number",
+            "description": "close (★ comes before high, unlike Binance/OKX)"
+          },
+          {
+            "type": "number",
+            "description": "low"
+          },
+          {
+            "type": "number",
+            "description": "high"
+          },
+          {
+            "type": "number",
+            "description": "volume"
+          }
+        ]
+      }
+    },
+    "liq_vacuum": {
+      "type": "array",
+      "description": "Array of 8 items in sample",
+      "items": {
+        "type": "array",
+        "description": "[low, high] price band",
+        "minItems": 2,
+        "maxItems": 2,
+        "items": [
+          {
+            "type": "number"
+          },
+          {
+            "type": "number"
+          }
+        ]
+      }
+    }
+  },
+  "required": [
+    "klines",
+    "liq_vacuum"
+  ]
+}

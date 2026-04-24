@@ -1,0 +1,25 @@
+# syntax=docker/dockerfile:1.6
+#
+# MM 前端镜像（Vite 构建 → Nginx 静态托管 + /api /ws 反代到后端）
+
+FROM node:20-alpine AS builder
+
+WORKDIR /app
+
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+
+COPY frontend/ ./
+# 打 production bundle；最终 dist/ 被 nginx stage 拷走
+RUN npm run build
+
+
+FROM nginx:1.25-alpine AS runtime
+
+COPY --from=builder /app/dist /usr/share/nginx/html
+COPY deploy/nginx.conf /etc/nginx/conf.d/default.conf
+
+EXPOSE 80
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+  CMD wget -qO- http://127.0.0.1/ >/dev/null 2>&1 || exit 1

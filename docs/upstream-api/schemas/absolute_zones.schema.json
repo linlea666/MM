@@ -1,0 +1,81 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://mm.local/schemas/absolute_zones.schema.json",
+  "title": "HFD pro_data response: absolute_zones",
+  "type": "object",
+  "properties": {
+    "klines": {
+      "type": "array",
+      "description": "Array of 4923 items in sample",
+      "items": {
+        "type": "array",
+        "description": "HFD kline tuple (NON-STANDARD ORDER): [ts, open, close, low, high, volume]",
+        "minItems": 6,
+        "maxItems": 6,
+        "items": [
+          {
+            "type": "integer",
+            "description": "ts (ms epoch, kline open time)"
+          },
+          {
+            "type": "number",
+            "description": "open"
+          },
+          {
+            "type": "number",
+            "description": "close (★ comes before high, unlike Binance/OKX)"
+          },
+          {
+            "type": "number",
+            "description": "low"
+          },
+          {
+            "type": "number",
+            "description": "high"
+          },
+          {
+            "type": "number",
+            "description": "volume"
+          }
+        ]
+      }
+    },
+    "order_blocks": {
+      "type": "array",
+      "description": "Array of 411 items in sample",
+      "items": {
+        "type": "object",
+        "properties": {
+          "bottom_price": {
+            "type": "number"
+          },
+          "start_time": {
+            "type": "integer"
+          },
+          "top_price": {
+            "type": "number"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "bottom_price",
+          "start_time",
+          "top_price",
+          "type"
+        ]
+      }
+    },
+    "volume_profile": {
+      "type": "array",
+      "description": "Array of 0 items in sample",
+      "items": {}
+    }
+  },
+  "required": [
+    "klines",
+    "order_blocks",
+    "volume_profile"
+  ]
+}

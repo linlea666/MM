@@ -1,0 +1,322 @@
+# ════════════════════════════════════════════════════════════════════
+# 规则引擎出厂默认值（Git 可审查）
+# ════════════════════════════════════════════════════════════════════
+# 运行时 = 本文件 DEEP MERGE 数据库中的 config_overrides。
+# 前端 / AI 只能改 config_overrides，不允许直接改 YAML。
+# 字段元数据（类型 / 范围 / 文案）见 rules.meta.yaml。
+# 一切阈值 / 权重 / 窗口 都放这里，代码里不准出现魔法数字。
+
+# ─── 全局（引擎共享）───
+global:
+  lookback_bars: 120              # 特征窗口：最近 N 根 K 线
+  recent_window_bars: 8           # "最近" 窗口（共振/猎杀等事件判定）
+  near_price_pct: 0.006           # 关键位"贴近"阈值 ±0.6%
+  merge_level_pct: 0.003          # 关键位聚合：0.3% 内视为同一位
+  level_ladder_min_spacing_pct: 0.005  # 档间最小间距 0.5%
+
+# ════════════════════════════════════════════════════════════════════
+# 能力评分（Capability Scores，统一 0-100）
+# ════════════════════════════════════════════════════════════════════
+capabilities:
+
+  # ─── 多头吸筹分 ───
+  accumulation:
+    weights:
+      fair_value_slope: 0.20        # fair_value 上行斜率
+      poc_shift_up: 0.20            # poc_shift 重心上移
+      imbalance_green: 0.15         # 最近 N 根 imbalance 绿占比
+      cvd_slope_up: 0.15            # cvd 斜率为正
+      near_support: 0.15            # 价格贴近 S1
+      resonance_buy: 0.15           # 最近共振买方向
+    thresholds:
+      slope_epsilon: 0.0            # 斜率判正/负的死区
+      imbalance_green_ratio: 0.6    # 绿占比阈值（≥ 得满分）
+      resonance_min_count: 2        # 共振事件最少次数（≥ 得满分）
+      poc_shift_min_pct: 0.002      # POC 累计上移 ≥ 0.2%
+    label_bands:                    # 分数 → 语义标签
+      very_strong: 80
+      strong: 60
+      neutral_low: 40
+      weak: 20
+
+  # ─── 空头派发分（与吸筹对称）───
+  distribution:
+    weights:
+      fair_value_slope: 0.20
+      poc_shift_down: 0.20
+      imbalance_red: 0.15
+      cvd_slope_down: 0.15
+      near_resistance: 0.15
+      resonance_sell: 0.15
+    thresholds:
+      slope_epsilon: 0.0
+      imbalance_red_ratio: 0.6
+      resonance_min_count: 2
+      poc_shift_min_pct: 0.002
+    label_bands:
+      very_strong: 80
+      strong: 60
+      neutral_low: 40
+      weak: 20
+
+  # ─── 突破确认分 ───
+  breakout:
+    weights:
+      level_pierced: 0.25           # 最近 N 根穿越关键位
+      whale_resonance: 0.25
+      power_imbalance: 0.15
+      ob_decayed: 0.15              # order block 已衰减
+      space_ahead: 0.20             # 突破方向前方有真空/fuel
+    thresholds:
+      pierce_atr_mult: 0.3          # 穿越幅度至少 0.3 * ATR（避免擦线）
+      whale_resonance_count: 2      # ≥ 2 次共振判强
+      power_imbalance_ratio: 1.5    # power_imbalance.ratio ≥ 此值算放大
+      ob_decay_threshold: 0.6       # ob_decay 剩余 < 40% 视为已衰减
+    label_bands:
+      strong_real: 70
+      weak_real: 40
+      fake: 30
+
+  # ─── 反转概率分 ───
+  reversal:
+    weights:
+      sweep_recent: 0.30            # 最近 N 根 sweep 事件
+      exhaustion_high: 0.25
+      fair_value_diverge: 0.20
+      liq_pierce_recover: 0.25      # 刺穿清算带后收回
+    thresholds:
+      exhaustion_alert: 5           # trend_exhaustion ≥ 此值算高位
+      fair_value_diverge_pct: 0.01  # |price - fair_value| / fair_value ≥ 1%
+      liq_recover_bars: 3           # 刺穿后 N 根内回到带内
+    label_bands:
+      very_high: 70
+      high: 50
+      medium: 30
+
+  # ─── 关键位强度（单个 level 打分）───
+  key_level_strength:
+    source_weights:
+      hvn: 40                       # HVN 节点
+      absolute_zone: 20             # 密集博弈带
+      fvg: 15                       # 真空区边缘
+      micro_poc: 15                 # 微观成本
+      smart_money: 10               # 主力成本
+      trend_price: 10               # 订单块
+      trailing_vwap: 10
+      heatmap: 20                   # 清算带
+    purity_bonus_max: 10            # trend_purity 纯度加分上限
+    ob_decay_bonus_max: 10          # 未衰减加分上限
+    test_count_decay:
+      1: 1.0
+      2: 0.85
+      3: 0.65
+      "4+": 0.4
+    state_decay:
+      first_test: 1.0
+      multi_test: 0.8
+      worn_out: 0.5
+    label_bands:
+      strong: 70
+      medium: 40
+
+  # ─── 流动性磁吸分（上下方各一个）───
+  liquidity_magnet:
+    weights:
+      heatmap_intensity: 0.40
+      fuel_strength: 0.30
+      vacuum_pull: 0.20
+      distance_close: 0.10
+    thresholds:
+      heatmap_min_intensity: 0.5
+      fuel_min: 0.3
+      max_distance_pct: 0.05        # 超过 5% 的目标忽略
+    max_targets_per_side: 3
+
+# ════════════════════════════════════════════════════════════════════
+# 模块 1：主力行为雷达（9 标签触发规则）
+# ════════════════════════════════════════════════════════════════════
+main_force_radar:
+  labels:
+    accumulate:
+      require:
+        accumulation_score_gte: 60
+        distribution_score_lt: 30
+      soft:
+        saturation_lt: 50
+    distribute:
+      require:
+        distribution_score_gte: 60
+        accumulation_score_lt: 30
+      soft:
+        saturation_gt: 60
+    support:                        # 护盘
+      require:
+        near_support: true
+        whale_direction: buy
+        imbalance_green: true
+    suppress:                       # 压盘
+      require:
+        near_resistance: true
+        whale_direction: sell
+        imbalance_red: true
+    pump:                           # 联合拉升
+      require:
+        resonance_count_gte: 3
+        whale_direction: buy
+        breakout_score_gte: 60
+    dump:                           # 联合砸盘
+      require:
+        resonance_count_gte: 3
+        whale_direction: sell
+        breakout_score_gte: 60
+    bull_trap:                      # 诱多
+      require:
+        just_broke_resistance: true
+        whale_direction: sell
+        power_imbalance_reverse: true
+    bear_trap:                      # 诱空
+      require:
+        just_broke_support: true
+        whale_direction: buy
+        power_imbalance_reverse: true
+    exhausted:                      # 衰竭
+      require:
+        exhaustion_gte: 7
+        saturation_gte: 70
+    brewing:                        # 变盘前夕
+      require:
+        cvd_converge: true          # |cvd_slope| < epsilon
+        vacuum_near: true
+        active_session: true
+  # 主标签从激活的 labels 里按 score 最大挑选，打平时按 priority 顺序
+  priority_order:
+    [pump, dump, accumulate, distribute, support, suppress,
+     bull_trap, bear_trap, exhausted, brewing]
+
+# ════════════════════════════════════════════════════════════════════
+# 模块 2：趋势阶段状态机（8 阶段）
+# ════════════════════════════════════════════════════════════════════
+phase_state_machine:
+  phases:
+    bottom_accumulation:            # 底部吸筹震荡
+      require:
+        accumulation_score_gte: 55
+        saturation_lt: 40
+        breakout_score_lt: 50
+    top_distribution:               # 高位派发震荡
+      require:
+        distribution_score_gte: 55
+        saturation_gt: 60
+        breakout_score_lt: 50
+    real_breakout:                  # 真突破启动
+      require:
+        breakout_score_gte: 70
+        reversal_score_lt: 50
+    trend_continuation:             # 趋势延续
+      require:
+        breakout_score_between: [40, 70]
+        participation: ["主力真参与", "局部参与"]
+    fake_breakout:                  # 假突破猎杀
+      require:
+        reversal_score_gte: 60
+        breakout_score_lt: 40
+    trend_exhaustion:               # 趋势耗竭
+      require:
+        exhaustion_gte: 7
+        saturation_gte: 70
+    vacuum_acceleration:            # 黑洞加速
+      require:
+        vacuum_breached: true
+        breakout_score_gte: 60
+    chaotic:                        # 无序震荡（默认兜底）
+      require: {}
+  phase_score_threshold: 60         # 低于此值标 unstable
+  instability_flip_window_bars: 3
+  instability_max_flips: 2
+
+# ════════════════════════════════════════════════════════════════════
+# 模块 3：主力参与确认
+# ════════════════════════════════════════════════════════════════════
+participation:
+  resonance_window_bars: 8
+  resonance_min_count: 2
+  fair_value_diverge_pct: 0.005
+  power_imbalance_extreme: 2.5      # ratio ≥ 此值算极端
+  active_session_threshold: 0.5     # time_heatmap 当前小时活跃度 ≥ 此值
+  levels:                           # 命中条件数量 → 结论
+    "主力真参与": 4
+    "局部参与": 2
+    "疑似散户": 1
+    "垃圾时间": 0
+
+# ════════════════════════════════════════════════════════════════════
+# 模块 4：关键位阶梯图
+# ════════════════════════════════════════════════════════════════════
+key_levels:
+  merge_distance_pct: 0.003         # 0.3% 内合并
+  min_spacing_pct: 0.005            # 档间最小间距 0.5%
+  min_sources_for_show: 1           # 至少由 1 个来源支持才显示
+  prefer_sources:                   # 聚合时优先展示的来源顺序
+    [hvn, absolute_zone, smart_money, trend_price, micro_poc, fvg, heatmap, trailing_vwap]
+  r_levels: 3
+  s_levels: 3
+  suit_logic:
+    first_test_strong: "反弹"       # 首测 + 强 → 反弹
+    worn_out: "观望"
+    decayed: "突破"
+
+# ════════════════════════════════════════════════════════════════════
+# 模块 5：流动性磁吸图（继承 capabilities.liquidity_magnet）
+# ════════════════════════════════════════════════════════════════════
+liquidity_map:
+  dominant_diff: 10                 # 上下磁吸分差 ≥ 此值才判主方向
+  neutral_band: 10                  # 否则标 neutral
+
+# ════════════════════════════════════════════════════════════════════
+# 模块 6：交易建议（V1 规则输出，3 情景）
+# ════════════════════════════════════════════════════════════════════
+trade_plan:
+  stars:                            # 总分 → 星级
+    1: 20
+    2: 40
+    3: 60
+    4: 75
+    5: 90
+  entry_zone_pct: 0.004             # 入场区间宽度：± 0.4%
+  stop_buffer_pct: 0.003            # 止损缓冲：目标位再外扩 0.3%
+  target_ratios: [1.5, 3.0]         # T1 / T2 的盈亏比
+  position_size:
+    light_max_stars: 2              # ≤ 此星级标轻仓
+    heavy_min_stars: 4              # ≥ 此星级标重仓
+  veto:
+    exhaustion: 7                   # exhaustion ≥ 此值否决顺势追入
+    purity: 30                      # trend_purity < 此值降级
+    active_session: 0.3             # time_heatmap 活跃度 < 此值降级
+
+# ════════════════════════════════════════════════════════════════════
+# AI 观察模式（V1.1 启用）
+# ════════════════════════════════════════════════════════════════════
+ai_observer:
+  enabled: false                    # V1 暂不启用
+  trigger:
+    conflict_score_gap: 30          # 能力分互相打架（≥ 差值）触发
+    attention_min: 50               # 低于此值不送 AI
+  attention_bands:
+    low: 30
+    medium: 60
+    high: 80
+  max_observations_per_run: 3
+
+# ════════════════════════════════════════════════════════════════════
+# UI 偏好（前端 /settings 可改，不影响后端行为）
+# ════════════════════════════════════════════════════════════════════
+ui:
+  refresh_ms: 5000
+  theme: "dark"
+  cards:
+    main_force_radar: true
+    phase_state_machine: true
+    participation: true
+    key_levels: true
+    liquidity_map: true
+    trade_plan: true

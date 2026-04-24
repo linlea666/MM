@@ -1,0 +1,42 @@
+# syntax=docker/dockerfile:1.6
+#
+# MM 后端镜像（FastAPI + APScheduler + SQLite）
+# 注意：
+#   - 后端只监听 8901（REST + WebSocket 合并在同一 ASGI 进程）
+#   - SQLite / 日志挂载到 /data、/logs，通过环境变量覆盖配置中的相对路径
+#   - 包 import 形如 `backend.main:app`，WORKDIR 设为 /app，仓库 backend/ 目录保持 /app/backend
+
+FROM python:3.11-slim AS runtime
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    TZ=Asia/Shanghai \
+    # 运行时路径（由 compose 挂载）
+    MM_DATABASE__PATH=/data/mm.sqlite \
+    MM_LOGGING__FILE__PATH=/logs/mm.log
+
+WORKDIR /app
+
+# 仅装最必要的运行时库；healthcheck 用 python 自带 urllib，无需 curl
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tzdata ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY backend/requirements.txt ./backend/requirements.txt
+RUN pip install -r ./backend/requirements.txt
+
+COPY backend/ ./backend/
+
+# 数据 & 日志目录（最终由 volume 挂载，镜像内先建空目录占位）
+RUN mkdir -p /data /logs
+
+EXPOSE 8901
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+  CMD python -c "import urllib.request,sys; \
+sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8901/health', timeout=3).status == 200 else 1)" \
+  || exit 1
+
+CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8901", "--proxy-headers"]

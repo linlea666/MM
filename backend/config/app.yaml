@@ -1,0 +1,93 @@
+app:
+  name: MM
+  version: 0.1.0
+  env: development  # development | production
+
+server:
+  host: 0.0.0.0
+  rest_port: 8901
+  ws_port: 8902
+  cors_origins:
+    - "*"   # 自用
+
+database:
+  path: data/mm.sqlite
+  wal_mode: true
+  busy_timeout_ms: 5000
+
+redis:
+  enabled: false   # V1 不用
+  host: localhost
+  port: 6379
+
+collector:
+  global_rps: 5
+  request_timeout_seconds: 30
+
+  default_symbols: ["BTC"]
+  timeframes: ["30m", "1h", "4h"]
+
+  hfd_base_url: "https://dash.hfd.fund/api/pro/pro_data"
+
+  kline_sources:
+    primary: "binance"
+    fallback: ["okx"]
+
+  schedule:
+    kline_close:                    # K 线收盘后 5 秒触发
+      - power_imbalance
+      - trailing_vwap
+      - trend_exhaustion
+      - liquidity_sweep
+      - micro_poc
+      - poc_shift
+      - cross_exchange_resonance
+      - fair_value                  # 4 系列权威源
+    every_5min:
+      - trend_saturation
+    every_30min:
+      - smart_money_cost
+      - trend_price
+      - trend_purity
+      - absolute_zones
+      - ob_decay
+      - fvg
+      - imbalance
+    every_1h:
+      - liq_heatmap
+      - liq_vacuum
+      - liquidation_fuel
+      - hvn_nodes
+      - inst_volume_profile
+    every_4h:
+      - time_heatmap
+
+  schedule_delay_seconds: 5         # K 线收盘后延迟，等 HFD 数据刷出
+
+ai:
+  enabled: false   # V1.1 启用
+  provider: deepseek
+  model: deepseek-chat
+  base_url: "https://api.deepseek.com/v1"
+  cache_ttl_minutes: 5
+  observer_interval_minutes: 5
+
+logging:
+  level: INFO                      # DEBUG | INFO | WARNING | ERROR
+  format: "[%(asctime)s] [%(levelname)s] %(name)s: %(message)s"
+  datefmt: "%Y-%m-%d %H:%M:%S"
+  console: true
+  file:
+    enabled: true
+    path: logs/mm.log
+    max_size_mb: 100
+    backup_count: 10
+  sqlite:
+    enabled: true
+    min_level: INFO                # DEBUG 不入库
+    retention_days: 7
+  ws:
+    enabled: true                  # Step 4 实装
+
+stats:
+  daily_review_hour_utc: 0         # V1.1 用，每日 00:00 UTC 触发

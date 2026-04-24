@@ -1,0 +1,71 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://mm.local/schemas/trend_exhaustion.schema.json",
+  "title": "HFD pro_data response: trend_exhaustion",
+  "type": "object",
+  "properties": {
+    "klines": {
+      "type": "array",
+      "description": "Array of 4923 items in sample",
+      "items": {
+        "type": "array",
+        "description": "HFD kline tuple (NON-STANDARD ORDER): [ts, open, close, low, high, volume]",
+        "minItems": 6,
+        "maxItems": 6,
+        "items": [
+          {
+            "type": "integer",
+            "description": "ts (ms epoch, kline open time)"
+          },
+          {
+            "type": "number",
+            "description": "open"
+          },
+          {
+            "type": "number",
+            "description": "close (★ comes before high, unlike Binance/OKX)"
+          },
+          {
+            "type": "number",
+            "description": "low"
+          },
+          {
+            "type": "number",
+            "description": "high"
+          },
+          {
+            "type": "number",
+            "description": "volume"
+          }
+        ]
+      }
+    },
+    "trend_exhaustion": {
+      "type": "array",
+      "description": "Array of 4923 items in sample",
+      "items": {
+        "type": "object",
+        "properties": {
+          "exhaustion": {
+            "type": "integer"
+          },
+          "timestamp": {
+            "type": "integer"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "exhaustion",
+          "timestamp",
+          "type"
+        ]
+      }
+    }
+  },
+  "required": [
+    "klines",
+    "trend_exhaustion"
+  ]
+}

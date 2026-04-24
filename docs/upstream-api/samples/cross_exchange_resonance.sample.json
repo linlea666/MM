@@ -1,0 +1,126 @@
+{
+  "cross_exchange_resonance": [
+    {
+      "count": 2,
+      "direction": "sell",
+      "exchanges": [
+        "binance",
+        "bybit"
+      ],
+      "price": 108471.4,
+      "timestamp": 1760680800000
+    },
+    {
+      "count": 6,
+      "direction": "sell",
+      "exchanges": [
+        "gate",
+        "hyperliquid",
+        "bybit",
+        "huobi",
+        "binance",
+        "bitget"
+      ],
+      "price": 106864.9,
+      "timestamp": 1760684400000
+    },
+    {
+      "count": 5,
+      "direction": "sell",
+      "exchanges": [
+        "gate",
+        "hyperliquid",
+        "huobi",
+        "binance",
+        "bitget"
+      ],
+      "price": 105660.0,
+      "timestamp": 1760688000000
+    },
+    "... (truncated 186 items) ...",
+    {
+      "count": 5,
+      "direction": "buy",
+      "exchanges": [
+        "gate",
+        "cryptocom",
+        "kucoin",
+        "huobi",
+        "binance"
+      ],
+      "price": 78507.6,
+      "timestamp": 1776866400000
+    },
+    {
+      "count": 2,
+      "direction": "buy",
+      "exchanges": [
+        "huobi",
+        "cryptocom"
+      ],
+      "price": 78784.0,
+      "timestamp": 1776870000000
+    },
+    {
+      "count": 2,
+      "direction": "sell",
+      "exchanges": [
+        "gate",
+        "okx"
+      ],
+      "price": 78633.0,
+      "timestamp": 1776956400000
+    }
+  ],
+  "klines": [
+    [
+      1759276800000,
+      113988.7,
+      114181.1,
+      113899.4,
+      114246.0,
+      3773.132
+    ],
+    [
+      1759280400000,
+      114181.0,
+      114491.6,
+      114083.3,
+      114498.0,
+      3764.019
+    ],
+    [
+      1759284000000,
+      114491.6,
+      114219.0,
+      114218.9,
+      114494.0,
+      2618.284
+    ],
+    "... (truncated 4917 items) ...",
+    [
+      1776988800000,
+      78214.3,
+      78384.5,
+      78116.6,
+      78459.0,
+      1279.851
+    ],
+    [
+      1776992400000,
+      78384.5,
+      78378.5,
+      77910.6,
+      78420.0,
+      1849.08
+    ],
+    [
+      1776996000000,
+      78378.5,
+      78396.5,
+      78360.0,
+      78397.3,
+      23.358
+    ]
+  ]
+}

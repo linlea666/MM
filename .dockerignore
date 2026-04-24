@@ -1,0 +1,57 @@
+# ─── VCS ───
+.git
+.gitignore
+.gitattributes
+
+# ─── Python ───
+__pycache__
+*.py[cod]
+*.so
+*.egg-info
+.eggs
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage*
+htmlcov
+build
+dist
+.venv
+venv
+env
+
+# ─── Node / 前端 ───
+node_modules
+frontend/node_modules
+frontend/dist
+frontend/.vite
+frontend/*.tsbuildinfo
+
+# ─── 运行时数据（绝不入镜像） ───
+backend/data
+backend/logs
+backend/.env
+data
+logs
+*.sqlite
+*.sqlite-*
+*.db
+
+# ─── 敏感 ───
+.env
+.env.*
+!.env.example
+deploy/.env
+deploy/data
+deploy/logs
+
+# ─── IDE / OS ───
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+*.swp
+
+# ─── 文档（镜像不需要） ───
+*.md
+docs

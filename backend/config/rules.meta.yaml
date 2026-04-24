@@ -1,0 +1,722 @@
+# ════════════════════════════════════════════════════════════════════
+# 配置项 UI 元数据（前端 /settings 渲染控件完全依据本文件）
+# ════════════════════════════════════════════════════════════════════
+# 后端每新增一个 Tier 1 配置项，只要在这里登记即可，前端自动出控件。
+# 未登记在这里的 key 视为 Tier 3（不给前端）。
+#
+# schema：
+#   type:    number | int | bool | string | enum | percent | weight
+#   min/max/step: 数字类
+#   options: enum 类
+#   group:   前端面板分组（对应大屏模块）
+#   label:   UI 显示名
+#   help:    提示文案（鼠标悬浮）
+#   impact:  参数调大 / 调小的后果
+#   danger:  true 表示"关键改动"，前端保存时二次确认
+#   readonly: true 表示 Tier 2 只读
+#
+# percent / weight 均为 0-1 浮点，只是前端分别渲染为百分比滑条和权重条
+
+# ── 分组顺序（前端导航）──
+groups:
+  - id: subscriptions
+    label: "币种与采集"
+  - id: radar
+    label: "主力行为雷达"
+  - id: phase
+    label: "趋势阶段状态机"
+  - id: capabilities
+    label: "能力评分"
+  - id: key_levels
+    label: "关键位与磁吸"
+  - id: trade_plan
+    label: "交易建议"
+  - id: ai
+    label: "AI 观察"
+  - id: system
+    label: "系统"
+  - id: ui
+    label: "UI 偏好"
+
+# ── Tier 1 可配置项 ──
+items:
+
+  # ─── 能力：多头吸筹 ───
+  capabilities.accumulation.weights.fair_value_slope:
+    type: weight
+    min: 0
+    max: 1
+    step: 0.05
+    group: capabilities
+    subgroup: "多头吸筹 · 权重"
+    label: "fair_value 上行斜率"
+    help: "fair_value 在最近窗口的斜率为正时贡献的权重"
+    impact: "调高：更依赖真实价值上行；调低：更看主力动作"
+  capabilities.accumulation.weights.poc_shift_up:
+    type: weight
+    min: 0
+    max: 1
+    step: 0.05
+    group: capabilities
+    subgroup: "多头吸筹 · 权重"
+    label: "POC 重心上移"
+  capabilities.accumulation.weights.imbalance_green:
+    type: weight
+    min: 0
+    max: 1
+    step: 0.05
+    group: capabilities
+    subgroup: "多头吸筹 · 权重"
+    label: "imbalance 绿占比"
+  capabilities.accumulation.weights.cvd_slope_up:
+    type: weight
+    min: 0
+    max: 1
+    step: 0.05
+    group: capabilities
+    subgroup: "多头吸筹 · 权重"
+    label: "CVD 斜率正"
+  capabilities.accumulation.weights.near_support:
+    type: weight
+    min: 0
+    max: 1
+    step: 0.05
+    group: capabilities
+    subgroup: "多头吸筹 · 权重"
+    label: "贴近支撑位"
+  capabilities.accumulation.weights.resonance_buy:
+    type: weight
+    min: 0
+    max: 1
+    step: 0.05
+    group: capabilities
+    subgroup: "多头吸筹 · 权重"
+    label: "共振买方向"
+  capabilities.accumulation.thresholds.imbalance_green_ratio:
+    type: percent
+    min: 0.3
+    max: 0.9
+    step: 0.05
+    group: capabilities
+    subgroup: "多头吸筹 · 阈值"
+    label: "imbalance 绿占比阈值"
+    help: "最近 N 根 imbalance 为绿的占比 ≥ 此值得满分"
+  capabilities.accumulation.thresholds.resonance_min_count:
+    type: int
+    min: 1
+    max: 10
+    step: 1
+    group: capabilities
+    subgroup: "多头吸筹 · 阈值"
+    label: "共振最小次数"
+  capabilities.accumulation.thresholds.poc_shift_min_pct:
+    type: percent
+    min: 0
+    max: 0.02
+    step: 0.001
+    group: capabilities
+    subgroup: "多头吸筹 · 阈值"
+    label: "POC 最小上移幅度"
+
+  # ─── 能力：空头派发 ───
+  capabilities.distribution.weights.fair_value_slope:
+    type: weight
+    min: 0
+    max: 1
+    step: 0.05
+    group: capabilities
+    subgroup: "空头派发 · 权重"
+    label: "fair_value 下行斜率"
+  capabilities.distribution.weights.poc_shift_down:
+    type: weight
+    min: 0
+    max: 1
+    step: 0.05
+    group: capabilities
+    subgroup: "空头派发 · 权重"
+    label: "POC 重心下移"
+  capabilities.distribution.weights.imbalance_red:
+    type: weight
+    min: 0
+    max: 1
+    step: 0.05
+    group: capabilities
+    subgroup: "空头派发 · 权重"
+    label: "imbalance 红占比"
+  capabilities.distribution.weights.cvd_slope_down:
+    type: weight
+    min: 0
+    max: 1
+    step: 0.05
+    group: capabilities
+    subgroup: "空头派发 · 权重"
+    label: "CVD 斜率负"
+  capabilities.distribution.weights.near_resistance:
+    type: weight
+    min: 0
+    max: 1
+    step: 0.05
+    group: capabilities
+    subgroup: "空头派发 · 权重"
+    label: "贴近阻力位"
+  capabilities.distribution.weights.resonance_sell:
+    type: weight
+    min: 0
+    max: 1
+    step: 0.05
+    group: capabilities
+    subgroup: "空头派发 · 权重"
+    label: "共振卖方向"
+  capabilities.distribution.thresholds.imbalance_red_ratio:
+    type: percent
+    min: 0.3
+    max: 0.9
+    step: 0.05
+    group: capabilities
+    subgroup: "空头派发 · 阈值"
+    label: "imbalance 红占比阈值"
+  capabilities.distribution.thresholds.resonance_min_count:
+    type: int
+    min: 1
+    max: 10
+    step: 1
+    group: capabilities
+    subgroup: "空头派发 · 阈值"
+    label: "共振最小次数"
+
+  # ─── 能力：突破 ───
+  capabilities.breakout.weights.level_pierced:
+    type: weight
+    min: 0
+    max: 1
+    step: 0.05
+    group: capabilities
+    subgroup: "突破确认 · 权重"
+    label: "关键位穿越"
+  capabilities.breakout.weights.whale_resonance:
+    type: weight
+    min: 0
+    max: 1
+    step: 0.05
+    group: capabilities
+    subgroup: "突破确认 · 权重"
+    label: "共振推动"
+  capabilities.breakout.weights.power_imbalance:
+    type: weight
+    min: 0
+    max: 1
+    step: 0.05
+    group: capabilities
+    subgroup: "突破确认 · 权重"
+    label: "力量悬殊"
+  capabilities.breakout.weights.ob_decayed:
+    type: weight
+    min: 0
+    max: 1
+    step: 0.05
+    group: capabilities
+    subgroup: "突破确认 · 权重"
+    label: "订单墙已衰减"
+  capabilities.breakout.weights.space_ahead:
+    type: weight
+    min: 0
+    max: 1
+    step: 0.05
+    group: capabilities
+    subgroup: "突破确认 · 权重"
+    label: "前方有空间"
+  capabilities.breakout.thresholds.pierce_atr_mult:
+    type: number
+    min: 0.1
+    max: 2.0
+    step: 0.1
+    group: capabilities
+    subgroup: "突破确认 · 阈值"
+    label: "穿越幅度 ATR 倍数"
+    help: "穿越幅度至少 N × ATR 才算真穿越（防擦线）"
+  capabilities.breakout.thresholds.whale_resonance_count:
+    type: int
+    min: 1
+    max: 10
+    step: 1
+    group: capabilities
+    subgroup: "突破确认 · 阈值"
+    label: "共振次数"
+  capabilities.breakout.thresholds.power_imbalance_ratio:
+    type: number
+    min: 1.0
+    max: 5.0
+    step: 0.1
+    group: capabilities
+    subgroup: "突破确认 · 阈值"
+    label: "力量悬殊比阈值"
+  capabilities.breakout.thresholds.ob_decay_threshold:
+    type: percent
+    min: 0.1
+    max: 0.9
+    step: 0.05
+    group: capabilities
+    subgroup: "突破确认 · 阈值"
+    label: "订单墙衰减阈值"
+
+  # ─── 能力：反转 ───
+  capabilities.reversal.weights.sweep_recent:
+    type: weight
+    min: 0
+    max: 1
+    step: 0.05
+    group: capabilities
+    subgroup: "反转 · 权重"
+    label: "最近猎杀事件"
+  capabilities.reversal.weights.exhaustion_high:
+    type: weight
+    min: 0
+    max: 1
+    step: 0.05
+    group: capabilities
+    subgroup: "反转 · 权重"
+    label: "能量耗竭高位"
+  capabilities.reversal.weights.fair_value_diverge:
+    type: weight
+    min: 0
+    max: 1
+    step: 0.05
+    group: capabilities
+    subgroup: "反转 · 权重"
+    label: "fair_value 背离"
+  capabilities.reversal.weights.liq_pierce_recover:
+    type: weight
+    min: 0
+    max: 1
+    step: 0.05
+    group: capabilities
+    subgroup: "反转 · 权重"
+    label: "刺穿清算后收回"
+  capabilities.reversal.thresholds.exhaustion_alert:
+    type: int
+    min: 1
+    max: 10
+    step: 1
+    group: capabilities
+    subgroup: "反转 · 阈值"
+    label: "耗竭警报阈值"
+  capabilities.reversal.thresholds.fair_value_diverge_pct:
+    type: percent
+    min: 0.001
+    max: 0.05
+    step: 0.001
+    group: capabilities
+    subgroup: "反转 · 阈值"
+    label: "背离百分比"
+
+  # ─── 关键位 ───
+  key_levels.merge_distance_pct:
+    type: percent
+    min: 0.001
+    max: 0.01
+    step: 0.001
+    group: key_levels
+    subgroup: "阶梯图"
+    label: "合并距离 %"
+    help: "价格距离 ≤ 此值的位视为同一个"
+  key_levels.min_spacing_pct:
+    type: percent
+    min: 0.001
+    max: 0.02
+    step: 0.001
+    group: key_levels
+    subgroup: "阶梯图"
+    label: "档间最小间距 %"
+  key_levels.min_sources_for_show:
+    type: int
+    min: 1
+    max: 4
+    step: 1
+    group: key_levels
+    subgroup: "阶梯图"
+    label: "最少来源数"
+  capabilities.key_level_strength.source_weights.hvn:
+    type: int
+    min: 0
+    max: 100
+    step: 5
+    group: key_levels
+    subgroup: "来源权重"
+    label: "HVN 节点"
+  capabilities.key_level_strength.source_weights.absolute_zone:
+    type: int
+    min: 0
+    max: 100
+    step: 5
+    group: key_levels
+    subgroup: "来源权重"
+    label: "密集博弈带"
+  capabilities.key_level_strength.source_weights.fvg:
+    type: int
+    min: 0
+    max: 100
+    step: 5
+    group: key_levels
+    subgroup: "来源权重"
+    label: "真空区边缘"
+  capabilities.key_level_strength.source_weights.micro_poc:
+    type: int
+    min: 0
+    max: 100
+    step: 5
+    group: key_levels
+    subgroup: "来源权重"
+    label: "微观成本"
+  capabilities.key_level_strength.source_weights.smart_money:
+    type: int
+    min: 0
+    max: 100
+    step: 5
+    group: key_levels
+    subgroup: "来源权重"
+    label: "主力成本"
+  capabilities.key_level_strength.source_weights.trend_price:
+    type: int
+    min: 0
+    max: 100
+    step: 5
+    group: key_levels
+    subgroup: "来源权重"
+    label: "订单块"
+  capabilities.key_level_strength.source_weights.heatmap:
+    type: int
+    min: 0
+    max: 100
+    step: 5
+    group: key_levels
+    subgroup: "来源权重"
+    label: "清算带"
+
+  # ─── 流动性磁吸 ───
+  capabilities.liquidity_magnet.weights.heatmap_intensity:
+    type: weight
+    min: 0
+    max: 1
+    step: 0.05
+    group: key_levels
+    subgroup: "磁吸 · 权重"
+    label: "清算带强度"
+  capabilities.liquidity_magnet.weights.fuel_strength:
+    type: weight
+    min: 0
+    max: 1
+    step: 0.05
+    group: key_levels
+    subgroup: "磁吸 · 权重"
+    label: "燃料带强度"
+  capabilities.liquidity_magnet.weights.vacuum_pull:
+    type: weight
+    min: 0
+    max: 1
+    step: 0.05
+    group: key_levels
+    subgroup: "磁吸 · 权重"
+    label: "真空区牵引"
+  capabilities.liquidity_magnet.weights.distance_close:
+    type: weight
+    min: 0
+    max: 1
+    step: 0.05
+    group: key_levels
+    subgroup: "磁吸 · 权重"
+    label: "距离近加分"
+  capabilities.liquidity_magnet.thresholds.heatmap_min_intensity:
+    type: percent
+    min: 0.1
+    max: 0.9
+    step: 0.05
+    group: key_levels
+    subgroup: "磁吸 · 阈值"
+    label: "清算带最小强度"
+  capabilities.liquidity_magnet.thresholds.max_distance_pct:
+    type: percent
+    min: 0.01
+    max: 0.2
+    step: 0.01
+    group: key_levels
+    subgroup: "磁吸 · 阈值"
+    label: "最大距离 %"
+
+  # ─── 主力行为雷达（阈值）───
+  main_force_radar.labels.accumulate.require.accumulation_score_gte:
+    type: int
+    min: 0
+    max: 100
+    step: 5
+    group: radar
+    subgroup: "吸筹"
+    label: "吸筹分 ≥"
+  main_force_radar.labels.accumulate.require.distribution_score_lt:
+    type: int
+    min: 0
+    max: 100
+    step: 5
+    group: radar
+    subgroup: "吸筹"
+    label: "派发分 <"
+  main_force_radar.labels.distribute.require.distribution_score_gte:
+    type: int
+    min: 0
+    max: 100
+    step: 5
+    group: radar
+    subgroup: "派发"
+    label: "派发分 ≥"
+  main_force_radar.labels.distribute.require.accumulation_score_lt:
+    type: int
+    min: 0
+    max: 100
+    step: 5
+    group: radar
+    subgroup: "派发"
+    label: "吸筹分 <"
+  main_force_radar.labels.pump.require.resonance_count_gte:
+    type: int
+    min: 1
+    max: 10
+    step: 1
+    group: radar
+    subgroup: "联合拉升"
+    label: "共振次数 ≥"
+  main_force_radar.labels.pump.require.breakout_score_gte:
+    type: int
+    min: 0
+    max: 100
+    step: 5
+    group: radar
+    subgroup: "联合拉升"
+    label: "突破分 ≥"
+  main_force_radar.labels.exhausted.require.exhaustion_gte:
+    type: int
+    min: 1
+    max: 10
+    step: 1
+    group: radar
+    subgroup: "衰竭"
+    label: "耗竭 ≥"
+  main_force_radar.labels.exhausted.require.saturation_gte:
+    type: int
+    min: 0
+    max: 100
+    step: 5
+    group: radar
+    subgroup: "衰竭"
+    label: "进度条 ≥"
+
+  # ─── 阶段状态机 ───
+  phase_state_machine.phases.real_breakout.require.breakout_score_gte:
+    type: int
+    min: 0
+    max: 100
+    step: 5
+    group: phase
+    subgroup: "真突破启动"
+    label: "突破分 ≥"
+  phase_state_machine.phases.fake_breakout.require.reversal_score_gte:
+    type: int
+    min: 0
+    max: 100
+    step: 5
+    group: phase
+    subgroup: "假突破猎杀"
+    label: "反转分 ≥"
+  phase_state_machine.phases.trend_exhaustion.require.exhaustion_gte:
+    type: int
+    min: 1
+    max: 10
+    step: 1
+    group: phase
+    subgroup: "趋势耗竭"
+    label: "耗竭 ≥"
+  phase_state_machine.phase_score_threshold:
+    type: int
+    min: 0
+    max: 100
+    step: 5
+    group: phase
+    subgroup: "稳定性"
+    label: "阶段最低置信度"
+  phase_state_machine.instability_max_flips:
+    type: int
+    min: 1
+    max: 5
+    step: 1
+    group: phase
+    subgroup: "稳定性"
+    label: "窗口内最大翻转次数"
+
+  # ─── 参与度 ───
+  participation.resonance_window_bars:
+    type: int
+    min: 2
+    max: 30
+    step: 1
+    group: radar
+    subgroup: "参与度"
+    label: "共振窗口（根）"
+  participation.resonance_min_count:
+    type: int
+    min: 1
+    max: 10
+    step: 1
+    group: radar
+    subgroup: "参与度"
+    label: "共振最小次数"
+  participation.power_imbalance_extreme:
+    type: number
+    min: 1.0
+    max: 10.0
+    step: 0.5
+    group: radar
+    subgroup: "参与度"
+    label: "力量悬殊极端值"
+
+  # ─── 交易建议 ───
+  trade_plan.entry_zone_pct:
+    type: percent
+    min: 0.001
+    max: 0.02
+    step: 0.001
+    group: trade_plan
+    subgroup: "入场/止损"
+    label: "入场区间宽度 ±%"
+  trade_plan.stop_buffer_pct:
+    type: percent
+    min: 0.001
+    max: 0.02
+    step: 0.001
+    group: trade_plan
+    subgroup: "入场/止损"
+    label: "止损缓冲 %"
+  trade_plan.target_ratios:
+    type: array
+    item_type: number
+    group: trade_plan
+    subgroup: "目标"
+    label: "T1 / T2 盈亏比"
+  trade_plan.veto.exhaustion:
+    type: int
+    min: 1
+    max: 10
+    step: 1
+    group: trade_plan
+    subgroup: "否决条件"
+    label: "耗竭否决阈值"
+  trade_plan.veto.active_session:
+    type: percent
+    min: 0
+    max: 1
+    step: 0.05
+    group: trade_plan
+    subgroup: "否决条件"
+    label: "活跃度最低要求"
+
+  # ─── AI 观察 ───
+  ai_observer.enabled:
+    type: bool
+    group: ai
+    subgroup: "总开关"
+    label: "启用 AI 观察"
+    danger: true
+  ai_observer.trigger.conflict_score_gap:
+    type: int
+    min: 10
+    max: 80
+    step: 5
+    group: ai
+    subgroup: "触发"
+    label: "能力分冲突差值"
+  ai_observer.trigger.attention_min:
+    type: int
+    min: 0
+    max: 100
+    step: 5
+    group: ai
+    subgroup: "触发"
+    label: "最低注意力"
+  ai_observer.max_observations_per_run:
+    type: int
+    min: 1
+    max: 10
+    step: 1
+    group: ai
+    subgroup: "产出"
+    label: "每轮最大观察数"
+
+  # ─── 系统 ───
+  global.lookback_bars:
+    type: int
+    min: 30
+    max: 500
+    step: 10
+    group: system
+    subgroup: "特征窗口"
+    label: "历史回溯根数"
+    danger: true
+  global.recent_window_bars:
+    type: int
+    min: 2
+    max: 30
+    step: 1
+    group: system
+    subgroup: "特征窗口"
+    label: "最近事件窗口"
+  global.near_price_pct:
+    type: percent
+    min: 0.001
+    max: 0.02
+    step: 0.001
+    group: system
+    subgroup: "定位精度"
+    label: "贴近阈值 ±%"
+
+  # ─── UI 偏好 ───
+  ui.refresh_ms:
+    type: int
+    min: 1000
+    max: 60000
+    step: 500
+    group: ui
+    subgroup: "刷新"
+    label: "刷新间隔 (ms)"
+  ui.theme:
+    type: enum
+    options: ["dark", "light"]
+    group: ui
+    subgroup: "外观"
+    label: "主题"
+  ui.cards.main_force_radar:
+    type: bool
+    group: ui
+    subgroup: "卡片显隐"
+    label: "主力行为雷达"
+  ui.cards.phase_state_machine:
+    type: bool
+    group: ui
+    subgroup: "卡片显隐"
+    label: "趋势阶段状态机"
+  ui.cards.participation:
+    type: bool
+    group: ui
+    subgroup: "卡片显隐"
+    label: "主力参与确认"
+  ui.cards.key_levels:
+    type: bool
+    group: ui
+    subgroup: "卡片显隐"
+    label: "关键位阶梯图"
+  ui.cards.liquidity_map:
+    type: bool
+    group: ui
+    subgroup: "卡片显隐"
+    label: "流动性磁吸"
+  ui.cards.trade_plan:
+    type: bool
+    group: ui
+    subgroup: "卡片显隐"
+    label: "交易建议"

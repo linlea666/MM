@@ -1,0 +1,66 @@
+# ─────────── Python ───────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+*.egg
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.venv/
+venv/
+env/
+ENV/
+
+# ─────────── Frontend ───────────
+node_modules/
+.npm/
+.pnpm-store/
+frontend/dist/
+frontend/.vite/
+*.log
+
+# ─────────── Secrets / runtime ───────────
+.env
+.env.local
+.env.*.local
+backend/.env
+deploy/.env
+config/secrets.yaml
+
+# ─────────── Data / logs ───────────
+*.sqlite
+*.sqlite-journal
+*.sqlite-shm
+*.sqlite-wal
+*.db
+backend/data/
+backend/logs/
+logs/
+
+# ─────────── IDE ───────────
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ─────────── OS ───────────
+.DS_Store
+Thumbs.db
+
+# ─────────── Docker ───────────
+deploy/data/
+deploy/logs/
+
+# ─────────── Tmp ───────────
+/tmp/
+*.tmp

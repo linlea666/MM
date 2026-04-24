@@ -1,0 +1,79 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://mm.local/schemas/smart_money_cost.schema.json",
+  "title": "HFD pro_data response: smart_money_cost",
+  "type": "object",
+  "properties": {
+    "klines": {
+      "type": "array",
+      "description": "Array of 4923 items in sample",
+      "items": {
+        "type": "array",
+        "description": "HFD kline tuple (NON-STANDARD ORDER): [ts, open, close, low, high, volume]",
+        "minItems": 6,
+        "maxItems": 6,
+        "items": [
+          {
+            "type": "integer",
+            "description": "ts (ms epoch, kline open time)"
+          },
+          {
+            "type": "number",
+            "description": "open"
+          },
+          {
+            "type": "number",
+            "description": "close (★ comes before high, unlike Binance/OKX)"
+          },
+          {
+            "type": "number",
+            "description": "low"
+          },
+          {
+            "type": "number",
+            "description": "high"
+          },
+          {
+            "type": "number",
+            "description": "volume"
+          }
+        ]
+      }
+    },
+    "smart_money_cost": {
+      "type": "array",
+      "description": "Array of 76 items in sample",
+      "items": {
+        "type": "object",
+        "properties": {
+          "avg_price": {
+            "type": "number"
+          },
+          "end_time": {
+            "type": "integer"
+          },
+          "start_time": {
+            "type": "integer"
+          },
+          "status": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "avg_price",
+          "end_time",
+          "start_time",
+          "status",
+          "type"
+        ]
+      }
+    }
+  },
+  "required": [
+    "klines",
+    "smart_money_cost"
+  ]
+}

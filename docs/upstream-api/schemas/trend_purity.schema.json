@@ -1,0 +1,94 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://mm.local/schemas/trend_purity.schema.json",
+  "title": "HFD pro_data response: trend_purity",
+  "type": "object",
+  "properties": {
+    "klines": {
+      "type": "array",
+      "description": "Array of 4923 items in sample",
+      "items": {
+        "type": "array",
+        "description": "HFD kline tuple (NON-STANDARD ORDER): [ts, open, close, low, high, volume]",
+        "minItems": 6,
+        "maxItems": 6,
+        "items": [
+          {
+            "type": "integer",
+            "description": "ts (ms epoch, kline open time)"
+          },
+          {
+            "type": "number",
+            "description": "open"
+          },
+          {
+            "type": "number",
+            "description": "close (★ comes before high, unlike Binance/OKX)"
+          },
+          {
+            "type": "number",
+            "description": "low"
+          },
+          {
+            "type": "number",
+            "description": "high"
+          },
+          {
+            "type": "number",
+            "description": "volume"
+          }
+        ]
+      }
+    },
+    "trend_purity": {
+      "type": "array",
+      "description": "Array of 76 items in sample",
+      "items": {
+        "type": "object",
+        "properties": {
+          "avg_price": {
+            "type": "number"
+          },
+          "buy_vol": {
+            "type": "number"
+          },
+          "end_time": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "purity": {
+            "type": "number"
+          },
+          "sell_vol": {
+            "type": "number"
+          },
+          "start_time": {
+            "type": "integer"
+          },
+          "total_vol": {
+            "type": "number"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "avg_price",
+          "buy_vol",
+          "end_time",
+          "purity",
+          "sell_vol",
+          "start_time",
+          "total_vol",
+          "type"
+        ]
+      }
+    }
+  },
+  "required": [
+    "klines",
+    "trend_purity"
+  ]
+}
