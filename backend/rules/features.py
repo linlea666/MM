@@ -239,6 +239,13 @@ class FeatureSnapshot(BaseModel):
     # imbalance 用事件窗 recent_window_bars：短期行为占比。
     imbalance_green_ratio: float = 0.0       # 事件窗内 value>0 占比（过滤零值后）
     imbalance_red_ratio: float = 0.0
+    # 动能一致性：综合 imbalance + cvd 方向，给 OnePass / scorer 用一个标签
+    # 直接判定"两者一致 vs 互相打架"。常见组合：
+    #   agree_up    —— imbalance 偏绿 + cvd 上行
+    #   agree_down  —— imbalance 偏红 + cvd 下行
+    #   conflict    —— 两者方向相反（口径冲突，应警惕假信号 / 数据 stale）
+    #   neutral     —— 任一为空 / 无明显方向
+    momentum_consistency: Literal["agree_up", "agree_down", "conflict", "neutral"] = "neutral"
     poc_shift_delta_pct: float | None = None  # lookback 窗首尾 poc 百分比变化（结构窗）
     poc_shift_trend: Literal["up", "down", "flat"] = "flat"
 
@@ -392,12 +399,26 @@ class FeatureExtractor:
                 None,
             )
         )
+        # 事实 stale：拉到的近 N 根 buy/sell/ratio 全为 0，等价"无数据"，
+        # 显式加进 stale_tables 让 OnePass / 前端做降级处理（避免被误读为"无失衡"
+        # = "动能枯竭"，这两者下游含义完全不同）。
+        if power_imbalance_recent and all(
+            p.buy_vol == 0 and p.sell_vol == 0 and p.ratio == 0
+            for p in power_imbalance_recent
+        ):
+            if "atoms_power_imbalance" not in stale:
+                stale.append("atoms_power_imbalance")
         trend_exhaustion_recent = await self._fetch_recent_trend_exhaustion(
             symbol, tf, self._exhaustion_window
         )
         trend_exhaustion_last = (
             trend_exhaustion_recent[-1] if trend_exhaustion_recent else None
         )
+        if trend_exhaustion_recent and all(
+            p.exhaustion == 0 for p in trend_exhaustion_recent
+        ):
+            if "atoms_trend_exhaustion" not in stale:
+                stale.append("atoms_trend_exhaustion")
         time_heatmap = await self._fetch_time_heatmap(symbol, tf)
         volume_profile_buckets = await self._fetch_volume_profile(symbol, tf)
         micro_poc_last = micro_pocs[-1] if micro_pocs else None
@@ -435,6 +456,8 @@ class FeatureExtractor:
         imb_red = sum(1 for p in imb_window if p.value < 0)
         imb_nonzero = imb_green + imb_red
         imb_denom = imb_nonzero or 1
+        green_ratio = (imb_green / imb_denom) if imb_nonzero else 0.0
+        red_ratio = (imb_red / imb_denom) if imb_nonzero else 0.0
 
         poc_trend: Literal["up", "down", "flat"] = "flat"
         poc_delta_pct = None
@@ -507,6 +530,8 @@ class FeatureExtractor:
             absolute_zones=absolute_zones,
             order_blocks=order_blocks,
             micro_pocs=micro_pocs,
+            anchor_ts=anchor_ts,
+            atr=atr,
         )
         pierce_atr_ratio = None
         if pierce_magnitude is not None and atr and atr > 0:
@@ -584,6 +609,30 @@ class FeatureExtractor:
             symbol, tf, anchor_ts=anchor_ts, tf_ms=tf_ms
         )
 
+        # 9.5 动能一致性：imbalance 占比 vs cvd 斜率方向交叉判断。
+        # 阈值留宽（imbalance 占比差 ≥ 0.2 才算"有偏"，cvd 用符号即可），
+        # 避免把噪声判成 conflict。
+        momentum_consistency: Literal[
+            "agree_up", "agree_down", "conflict", "neutral"
+        ] = "neutral"
+        if imb_nonzero and cvd_slope is not None:
+            imb_lead: Literal["buy", "sell", "neutral"] = "neutral"
+            if green_ratio - red_ratio >= 0.2:
+                imb_lead = "buy"
+            elif red_ratio - green_ratio >= 0.2:
+                imb_lead = "sell"
+            cvd_lead: Literal["buy", "sell", "neutral"] = "neutral"
+            if cvd_slope > 0:
+                cvd_lead = "buy"
+            elif cvd_slope < 0:
+                cvd_lead = "sell"
+            if imb_lead == "buy" and cvd_lead == "buy":
+                momentum_consistency = "agree_up"
+            elif imb_lead == "sell" and cvd_lead == "sell":
+                momentum_consistency = "agree_down"
+            elif imb_lead != "neutral" and cvd_lead != "neutral" and imb_lead != cvd_lead:
+                momentum_consistency = "conflict"
+
         elapsed_ms = int((time.perf_counter() - t0) * 1000)
         snap = FeatureSnapshot(
             symbol=symbol,
@@ -604,8 +653,9 @@ class FeatureExtractor:
             cvd_slope_sign=cvd_sign,
             cvd_range=cvd_range,
             cvd_converge_ratio=cvd_converge_ratio,
-            imbalance_green_ratio=(imb_green / imb_denom) if imb_nonzero else 0.0,
-            imbalance_red_ratio=(imb_red / imb_denom) if imb_nonzero else 0.0,
+            imbalance_green_ratio=green_ratio,
+            imbalance_red_ratio=red_ratio,
+            momentum_consistency=momentum_consistency,
             poc_shift_delta_pct=poc_delta_pct,
             poc_shift_trend=poc_trend,
             power_imbalance_last=power_imbalance_last,
@@ -1297,6 +1347,8 @@ def _nearest_levels_and_pierce(
     absolute_zones: list[AbsoluteZone],
     order_blocks: list[OrderBlock],
     micro_pocs: list[MicroPocSegment],
+    anchor_ts: int | None = None,
+    atr: float | None = None,
 ) -> tuple[
     float | None, float | None,          # nearest support price / distance
     float | None, float | None,          # nearest resistance price / distance
@@ -1307,11 +1359,23 @@ def _nearest_levels_and_pierce(
 
     额外返回穿越幅度（max(|cur.close - level|) over pierced levels）+ 参考价位，
     供 scorer 结合 ATR 判断"真突破 / 擦线"。
+
+    **2026-04 修复**：过滤"当前 K 线自指" 候选，避免出现「nearest_resistance =
+    当前 K 线 high、nearest_support = 当前 K 线 low」这种伪关键位（典型症状：
+    距现价 < 0.1% 且 just_broke_resistance/support 同时为 true）。
+      1. 过滤 absolute_zones 中 ``start_time >= anchor_ts`` 的 zone（当前 K 线
+         本期生成的 zone bottom/top 就是 K 线 low/high，没有"关键位"含义）。
+      2. 仅在最终选出的 nearest_* 价位通过最小距离阈值（``max(0.3%, 0.5×ATR/price)``）
+         时才返回；否则视为"无近端关键位"，置 None。
+    `micro_pocs` 中 ongoing 的最后一段保留（POC 是成交集中价位，与 K 线 high/low
+    含义不同，仍是合理"动态磁吸位"）。
     """
     candidates: list[float] = []
     for h in hvn_nodes:
         candidates.append(h.price)
     for a in absolute_zones:
+        if anchor_ts is not None and a.start_time >= anchor_ts:
+            continue
         candidates.append(a.bottom_price)
         candidates.append(a.top_price)
     for o in order_blocks:
@@ -1326,6 +1390,16 @@ def _nearest_levels_and_pierce(
     nearest_r = min(resistances) if resistances else None
     near_s_dist = (last_price - nearest_s) / last_price if nearest_s else None
     near_r_dist = (nearest_r - last_price) / last_price if nearest_r else None
+
+    if last_price > 0:
+        atr_pct = (atr / last_price) if (atr is not None and atr > 0) else 0.0
+        min_dist_pct = max(0.003, 0.5 * atr_pct)
+        if nearest_s is not None and near_s_dist is not None and near_s_dist < min_dist_pct:
+            nearest_s = None
+            near_s_dist = None
+        if nearest_r is not None and near_r_dist is not None and near_r_dist < min_dist_pct:
+            nearest_r = None
+            near_r_dist = None
 
     # 穿越检测：遍历 **所有候选价位**（不按当前分类过滤），
     # 因为一个被刚刚从下向上穿越的价位，即使当前已变 support，依然应该

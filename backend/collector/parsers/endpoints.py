@@ -275,12 +275,41 @@ def parse_inst_volume_profile(symbol: str, tf: str, payload: dict) -> ParserResu
 
 
 def parse_trend_purity(symbol: str, tf: str, payload: dict) -> ParserResult:
+    """解析 trend_purity 段。
+
+    上游 ``total_vol`` 偶发被错填为 ``buy_vol``（导致 ``sell_vol > total_vol`` 的
+    自相矛盾），这里对每行做硬校验：``total_vol`` 必须 ≥ ``buy_vol + sell_vol``，
+    否则强制重写为 ``buy_vol + sell_vol`` 并打 warning，避免下游 OnePass / 前端
+    依赖该字段做"主力净买卖方向"判定时被误导。
+    """
     result = ParserResult()
     out: list = []
     for row in _safe_list(payload, "trend_purity"):
         if not isinstance(row, dict):
             continue
         try:
+            buy_v = float(row["buy_vol"])
+            sell_v = float(row["sell_vol"])
+            sum_v = buy_v + sell_v
+            raw_total = row.get("total_vol")
+            total_v = float(raw_total) if raw_total is not None else sum_v
+            if total_v + 1e-6 < sum_v:
+                logger.warning(
+                    "trend_purity.total_vol 上游错填",
+                    extra={
+                        "tags": ["PARSER", "DATA_AUDIT"],
+                        "context": {
+                            "symbol": symbol,
+                            "tf": tf,
+                            "start_time": row.get("start_time"),
+                            "buy_vol": buy_v,
+                            "sell_vol": sell_v,
+                            "raw_total_vol": raw_total,
+                            "fixed_total_vol": sum_v,
+                        },
+                    },
+                )
+                total_v = sum_v
             out.append(
                 TrendPuritySegment(
                     symbol=symbol,
@@ -288,9 +317,9 @@ def parse_trend_purity(symbol: str, tf: str, payload: dict) -> ParserResult:
                     start_time=_as_int_ms(row["start_time"]),
                     end_time=_as_int_ms(row["end_time"]) if row.get("end_time") is not None else None,
                     avg_price=float(row["avg_price"]),
-                    buy_vol=float(row["buy_vol"]),
-                    sell_vol=float(row["sell_vol"]),
-                    total_vol=float(row.get("total_vol") or (row["buy_vol"] + row["sell_vol"])),
+                    buy_vol=buy_v,
+                    sell_vol=sell_v,
+                    total_vol=total_v,
                     purity=float(row["purity"]),
                     type=str(row["type"]),
                 )

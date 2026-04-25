@@ -18,6 +18,20 @@ export function formatPct(v: number, digits = 2): string {
   return `${v.toFixed(digits)}%`;
 }
 
+/**
+ * 将 [0,1] 区间的比例（ratio）格式化为百分比字符串。
+ *
+ * 典型用途：后端返回的 `cvd_converge_ratio`（0.7283）/
+ * `imbalance_green_ratio`（1.0）/ `purity_ratio` 等字段都是 0-1 小数。
+ *
+ * 与 `formatPct` 的区别：`formatPct` 期望输入已经是百分比口径（12.09 → "12.09%"），
+ * 而 `formatRatio` 期望输入是 0-1 小数（0.7283 → "72.83%"）。
+ */
+export function formatRatio(v: number, digits = 2): string {
+  if (!Number.isFinite(v)) return "—";
+  return `${(v * 100).toFixed(digits)}%`;
+}
+
 /** ms 时间戳 → 本地 HH:mm:ss */
 export function formatTs(ms: number): string {
   return new Date(ms).toLocaleTimeString("zh-CN", { hour12: false });

@@ -2,7 +2,7 @@ import { useState, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useSymbolStore } from "@/stores/symbol-store";
 import { fetchIndicatorsPanorama } from "@/lib/api";
-import { cn, formatPrice, formatPct } from "@/lib/utils";
+import { cn, formatPrice, formatPct, formatRatio } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import {
   AlertTriangle,
@@ -90,6 +90,12 @@ const fmtInt = (v: unknown): string => {
 const fmtPctSafe = (v: unknown): string => {
   if (typeof v !== "number" || !Number.isFinite(v)) return "—";
   return formatPct(v);
+};
+
+/** 0-1 小数 → 百分比字符串（自动 ×100）。适用于 ratio 类字段。 */
+const fmtRatioSafe = (v: unknown): string => {
+  if (typeof v !== "number" || !Number.isFinite(v)) return "—";
+  return formatRatio(v);
 };
 
 const fmtPrice = (v: unknown): string => {
@@ -544,7 +550,7 @@ function TrendTab({ snap }: { snap: SnapAccess }) {
                   {fmtPctSafe(progress)}
                 </span>
               </div>
-              <ProgressBar value={progress} max={1} tone={tone} className="mb-2" />
+              <ProgressBar value={progress} max={100} tone={tone} className="mb-2" />
               <div className="flex items-baseline justify-between text-xs">
                 <span className="text-muted-foreground">当前 / 平均量</span>
                 <span className="num">
@@ -585,7 +591,7 @@ function TrendTab({ snap }: { snap: SnapAccess }) {
         </div>
         <div className="flex items-baseline justify-between text-xs">
           <span className="text-muted-foreground">收敛比</span>
-          <span className="num">{fmtPctSafe(snap.get("cvd_converge_ratio"))}</span>
+          <span className="num">{fmtRatioSafe(snap.get("cvd_converge_ratio"))}</span>
         </div>
         <ProgressBar
           value={Number(snap.get("cvd_converge_ratio") ?? 0)}
@@ -597,7 +603,7 @@ function TrendTab({ snap }: { snap: SnapAccess }) {
           <div>
             <div className="flex items-baseline justify-between text-[11px]">
               <span className="text-emerald-400/80">imb 绿</span>
-              <span className="num">{fmtPctSafe(snap.get("imbalance_green_ratio"))}</span>
+              <span className="num">{fmtRatioSafe(snap.get("imbalance_green_ratio"))}</span>
             </div>
             <ProgressBar
               value={Number(snap.get("imbalance_green_ratio") ?? 0)}
@@ -607,7 +613,7 @@ function TrendTab({ snap }: { snap: SnapAccess }) {
           <div>
             <div className="flex items-baseline justify-between text-[11px]">
               <span className="text-rose-400/80">imb 红</span>
-              <span className="num">{fmtPctSafe(snap.get("imbalance_red_ratio"))}</span>
+              <span className="num">{fmtRatioSafe(snap.get("imbalance_red_ratio"))}</span>
             </div>
             <ProgressBar
               value={Number(snap.get("imbalance_red_ratio") ?? 0)}
@@ -2047,6 +2053,7 @@ function marketBriefing(snap: SnapAccess): Briefing {
   if (purity || sat) {
     const purityVal =
       typeof purity?.purity === "number" ? (purity.purity as number) : null;
+    // progress 后端口径是百分比 [0,100]，不再 ×100。
     const satProg =
       typeof sat?.progress === "number" ? (sat.progress as number) : null;
     const stage =
@@ -2056,11 +2063,11 @@ function marketBriefing(snap: SnapAccess): Briefing {
           ? "派发/下行段"
           : "无明显段";
     const satWord =
-      satProg === null ? "" : satProg >= 0.9 ? "已饱和" : satProg >= 0.85 ? "接近饱和" : "饱和度健康";
+      satProg === null ? "" : satProg >= 90 ? "已饱和" : satProg >= 85 ? "接近饱和" : "饱和度健康";
     lines.push(
       `当前阶段：${stage}${
         purityVal !== null ? `（纯度 ${purityVal.toFixed(0)}/100）` : ""
-      }${satProg !== null ? `，饱和度 ${(satProg * 100).toFixed(1)}% ${satWord}` : ""}。`,
+      }${satProg !== null ? `，饱和度 ${satProg.toFixed(1)}% ${satWord}` : ""}。`,
     );
   }
 
@@ -2125,6 +2132,25 @@ function marketBriefing(snap: SnapAccess): Briefing {
     if (parts.length > 0) lines.push(`${parts.join("，")}。`);
   }
 
+  // 7. 波段四维（顶级教练专用：主力均价 / 中位止盈 / 极限痛点 / 时间预算）
+  const sp = snap.get<Record<string, unknown>>("segment_portrait");
+  if (sp && lp) {
+    const roiAvg = typeof sp.roi_avg_price === "number" ? (sp.roi_avg_price as number) : null;
+    const roiLimitAvg = typeof sp.roi_limit_avg_price === "number" ? (sp.roi_limit_avg_price as number) : null;
+    const painMax = typeof sp.pain_max_price === "number" ? (sp.pain_max_price as number) : null;
+    const ddTrail = typeof sp.dd_trailing_current === "number" ? (sp.dd_trailing_current as number) : null;
+    const barsToAvg = typeof sp.bars_to_avg === "number" ? (sp.bars_to_avg as number) : null;
+    const segs: string[] = [];
+    if (roiAvg) segs.push(`主力均价 \`${formatPrice(roiAvg)}\`（${pctText((roiAvg - lp) / lp)}）`);
+    if (roiLimitAvg) segs.push(`中位止盈 \`${formatPrice(roiLimitAvg)}\`（${pctText((roiLimitAvg - lp) / lp)}）`);
+    if (painMax) segs.push(`极限痛点 \`${formatPrice(painMax)}\`（${pctText((painMax - lp) / lp)}）`);
+    if (ddTrail) segs.push(`动态止损 \`${formatPrice(ddTrail)}\`（${pctText((ddTrail - lp) / lp)}）`);
+    if (barsToAvg) segs.push(`时间预算 ${barsToAvg} 根 K`);
+    if (segs.length > 0) {
+      lines.push(`**波段四维**：${segs.join("、")}。`);
+    }
+  }
+
   return {
     tone,
     headline: `综合判断：${direction}`,
@@ -2156,9 +2182,10 @@ function trendBriefing(snap: SnapAccess): Briefing {
     );
   }
   if (sat) {
+    // progress 后端口径是百分比 [0,100]
     const prog = Number(sat.progress ?? 0);
-    const word = prog >= 0.9 ? "已饱和（信号降级）" : prog >= 0.85 ? "接近饱和" : "健康";
-    lines.push(`**饱和度**：${(prog * 100).toFixed(1)}% — ${word}。`);
+    const word = prog >= 90 ? "已饱和（信号降级）" : prog >= 85 ? "接近饱和" : "健康";
+    lines.push(`**饱和度**：${prog.toFixed(1)}% — ${word}。`);
   }
   if (typeof fvDelta === "number") {
     lines.push(
@@ -2469,6 +2496,181 @@ function BriefingPanel({
   );
 }
 
+// ─────────────────────────────────────────────────────
+// 数据健康检查面板（与 OnePass prompt「数据健康自审」对齐）
+// 检查 5 类常见数据问题，给交易员一眼判断报告可信度。
+// ─────────────────────────────────────────────────────
+
+type HealthSeverity = "ok" | "warn" | "fail";
+
+interface HealthFinding {
+  severity: HealthSeverity;
+  label: string;
+  detail: string;
+}
+
+function deriveHealthFindings(snap: SnapAccess): HealthFinding[] {
+  const findings: HealthFinding[] = [];
+
+  const stale = snap.list<string>("stale_tables");
+  const KEY_TABLES = new Set([
+    "atoms_choch",
+    "atoms_cascade_liquidation",
+    "atoms_retail_stop_band",
+    "atoms_volume_profile",
+    "atoms_power_imbalance",
+  ]);
+  const staleKey = stale.filter((s) => KEY_TABLES.has(s));
+  if (staleKey.length > 0) {
+    findings.push({
+      severity: "fail",
+      label: "关键原子表缺失",
+      detail: staleKey.join(" / "),
+    });
+  } else if (stale.length > 0) {
+    findings.push({
+      severity: "warn",
+      label: `${stale.length} 张原子表无数据`,
+      detail: stale.slice(0, 3).join(" / ") + (stale.length > 3 ? " 等" : ""),
+    });
+  } else {
+    findings.push({ severity: "ok", label: "原子表新鲜度", detail: "全部在线" });
+  }
+
+  const purity = snap.get<Record<string, unknown>>("trend_purity_last");
+  if (purity) {
+    const buy = Number(purity.buy_vol ?? 0);
+    const sell = Number(purity.sell_vol ?? 0);
+    const total = Number(purity.total_vol ?? 0);
+    const t = String(purity.type ?? "");
+    const sumOk = total + 1e-3 >= buy + sell;
+    const dirOk =
+      (t === "Accumulation" && buy >= sell) ||
+      (t === "Distribution" && sell >= buy) ||
+      buy === sell;
+    if (!sumOk) {
+      findings.push({
+        severity: "fail",
+        label: "trend_purity 总量不一致",
+        detail: `buy+sell=${(buy + sell).toLocaleString()} > total=${total.toLocaleString()}`,
+      });
+    } else if (!dirOk) {
+      findings.push({
+        severity: "warn",
+        label: "trend_purity 方向矛盾",
+        detail: `${t} 但 buy=${buy.toLocaleString()} / sell=${sell.toLocaleString()}`,
+      });
+    } else {
+      findings.push({ severity: "ok", label: "trend_purity 一致性", detail: "通过" });
+    }
+  }
+
+  const mc = snap.get<string>("momentum_consistency");
+  if (mc === "conflict") {
+    findings.push({
+      severity: "warn",
+      label: "动能口径冲突",
+      detail: "imbalance 与 CVD 方向相反，警惕假信号",
+    });
+  } else if (mc === "agree_up" || mc === "agree_down") {
+    findings.push({
+      severity: "ok",
+      label: "动能口径一致",
+      detail: mc === "agree_up" ? "imbalance 与 CVD 同向偏多" : "imbalance 与 CVD 同向偏空",
+    });
+  }
+
+  const nrDist = snap.get<number>("nearest_resistance_distance_pct");
+  const nsDist = snap.get<number>("nearest_support_distance_pct");
+  const tooNear = (typeof nrDist === "number" && nrDist >= 0 && nrDist < 0.003)
+    || (typeof nsDist === "number" && nsDist <= 0 && nsDist > -0.003);
+  if (tooNear) {
+    findings.push({
+      severity: "warn",
+      label: "近端关键位距离过窄（< 0.3%）",
+      detail: "可能是 K 线自指噪声，建议改用 trailing_vwap_last",
+    });
+  } else if (typeof nrDist === "number" || typeof nsDist === "number") {
+    findings.push({ severity: "ok", label: "近端关键位距离", detail: "在合理区间" });
+  }
+
+  const brokeR = Boolean(snap.get<boolean>("just_broke_resistance"));
+  const brokeS = Boolean(snap.get<boolean>("just_broke_support"));
+  if (brokeR && brokeS) {
+    findings.push({
+      severity: "warn",
+      label: "穿越判定双触发",
+      detail: "just_broke_resistance 与 just_broke_support 同时为 true，可能是震荡假突破",
+    });
+  }
+
+  return findings;
+}
+
+function DataHealthPanel({ snap }: { snap: SnapAccess }) {
+  const findings = deriveHealthFindings(snap);
+  if (findings.length === 0) return null;
+  const failCount = findings.filter((f) => f.severity === "fail").length;
+  const warnCount = findings.filter((f) => f.severity === "warn").length;
+  const overall: HealthSeverity =
+    failCount > 0 ? "fail" : warnCount > 0 ? "warn" : "ok";
+  const toneClass =
+    overall === "fail"
+      ? "border-rose-500/40 bg-rose-500/5"
+      : overall === "warn"
+        ? "border-amber-500/40 bg-amber-500/5"
+        : "border-emerald-500/40 bg-emerald-500/5";
+  const headTone =
+    overall === "fail"
+      ? "text-rose-400"
+      : overall === "warn"
+        ? "text-amber-400"
+        : "text-emerald-400";
+  const headline =
+    overall === "fail"
+      ? `失败 ${failCount} 项 / 警告 ${warnCount} 项`
+      : overall === "warn"
+        ? `警告 ${warnCount} 项`
+        : "全部通过";
+
+  return (
+    <div className={cn("rounded-lg border p-3 sm:p-4", toneClass)}>
+      <div className="flex items-center gap-2">
+        <span
+          className={cn(
+            "inline-block h-4 w-1 rounded",
+            overall === "fail" && "bg-rose-400",
+            overall === "warn" && "bg-amber-400",
+            overall === "ok" && "bg-emerald-400",
+          )}
+        />
+        <span className="text-xs uppercase tracking-[0.18em] text-muted-foreground/80">
+          数据健康自审（与 AI 分析对齐）
+        </span>
+        <span className={cn("text-sm font-semibold", headTone)}>· {headline}</span>
+      </div>
+      <ul className="mt-2 grid gap-1.5 text-sm leading-relaxed sm:grid-cols-2 lg:grid-cols-3">
+        {findings.map((f, i) => (
+          <li key={i} className="flex items-start gap-2">
+            <span
+              className={cn(
+                "mt-1 inline-block h-2 w-2 shrink-0 rounded-full",
+                f.severity === "fail" && "bg-rose-400",
+                f.severity === "warn" && "bg-amber-400",
+                f.severity === "ok" && "bg-emerald-400",
+              )}
+            />
+            <span className="text-foreground/90">
+              <span className="font-medium">{f.label}</span>
+              <span className="text-muted-foreground"> · {f.detail}</span>
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 /** 把简单 markdown（**bold** 和 反引号 code）渲染成 HTML。
  * 仅在 BriefingPanel 内部受控字符串使用，避免 XSS（输入全部来自 snapshot 数值/枚举）。 */
 function htmlBriefingLine(s: string): string {
@@ -2569,6 +2771,9 @@ export default function IndicatorsPage() {
           </button>
         </div>
       </div>
+
+      {/* 数据健康自审（与 AI 报告顶部对齐） */}
+      {hasData && <DataHealthPanel snap={snap} />}
 
       {/* 整体白话总览 */}
       {market && <BriefingPanel brief={market} variant="market" />}
