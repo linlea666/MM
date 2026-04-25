@@ -272,6 +272,50 @@ def test_momentum_pulse_override_skipped_when_too_old():
     assert view.override is None
 
 
+def test_momentum_pulse_pierce_two_sided_no_score_only_hint():
+    """recent_window 内既上破又下破（震荡假突破）→ pierce 不计入 score，
+    仅挂一条 side='both'、delta=0 的 hint contribution；override 仍按 broke_r 优先。
+    """
+    view = _derive_momentum_pulse(**_kwargs(
+        cvd_slope=-1.0, cvd_slope_sign="down",     # short +20
+        just_broke_resistance=True,
+        just_broke_support=True,
+        pierce_atr_ratio=0.87,
+    ))
+    # pierce 不再双向加分：long 应保持 0、short 仅来自 cvd_slope=20
+    assert view.score_long == 0
+    assert view.score_short == 20
+    pierce_contribs = [c for c in view.contributions if c.label == "pierce"]
+    assert len(pierce_contribs) == 1
+    assert pierce_contribs[0].delta == 0
+    assert pierce_contribs[0].side == "both"
+    assert "震荡" in pierce_contribs[0].value
+    # override 仍在（按 broke_r 优先 → bullish Pierce）
+    assert view.override is not None
+    assert view.override.kind == "Pierce"
+    assert view.override.direction == "bullish"
+
+
+def test_momentum_pulse_pierce_one_sided_still_scores():
+    """单向 pierce 仍按原逻辑加分（行为兼容）。"""
+    view = _derive_momentum_pulse(**_kwargs(
+        just_broke_resistance=True,
+        pierce_atr_ratio=0.5,
+    ))
+    assert view.score_long == 10
+    assert view.score_short == 0
+
+
+def test_momentum_pulse_cvd_slope_humanized_value():
+    """cvd_slope 巨大数字应人类可读化（万 / 亿），不再裸出 -711628716.81。"""
+    view = _derive_momentum_pulse(**_kwargs(
+        cvd_slope=-711_628_716.81, cvd_slope_sign="down",
+    ))
+    cvd = next(c for c in view.contributions if c.label == "cvd_slope")
+    assert "亿" in cvd.value
+    assert "711628716" not in cvd.value
+
+
 # ═══════════════════════════════════════════════════════════════
 # TargetProjection
 # ═══════════════════════════════════════════════════════════════

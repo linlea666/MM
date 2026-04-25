@@ -1794,6 +1794,25 @@ def _clamp(v: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, v))
 
 
+def _fmt_human_number(v: float) -> str:
+    """大数字人类可读化：cvd_slope 这种 -7.1 亿 / 1.2 万 比 -711628716.81 直观得多。
+
+    阈值：|v| ≥ 1e8 → 亿；≥ 1e4 → 万；其他 → 2 位小数原值。
+    专供 ContribItem.value 字符串拼接，无单位，调用方可自行加 "/根"、"%" 等。
+    """
+    a = abs(v)
+    sign = "-" if v < 0 else ""
+    if a >= 1e8:
+        return f"{sign}{a / 1e8:.2f}亿"
+    if a >= 1e4:
+        return f"{sign}{a / 1e4:.2f}万"
+    if a >= 1:
+        return f"{v:.2f}"
+    if a > 0:
+        return f"{v:.4f}"
+    return "0"
+
+
 def _override_detail(kind: str, direction: str, level_price: float, bars: int) -> str:
     arrow = "↑" if direction == "bullish" else "↓"
     when = "刚刚" if bars <= 0 else f"{bars} 根前"
@@ -1889,14 +1908,14 @@ def _derive_momentum_pulse(
         delta = w["cvd_slope"]
         long_score += delta
         contributions.append(ContribItem(
-            label="cvd_slope", value=f"slope={cvd_slope:.2f}",
+            label="cvd_slope", value=f"slope={_fmt_human_number(cvd_slope)}",
             delta=int(round(delta)), side="long",
         ))
     elif cvd_slope_sign == "down" and cvd_slope is not None:
         delta = w["cvd_slope"]
         short_score += delta
         contributions.append(ContribItem(
-            label="cvd_slope", value=f"slope={cvd_slope:.2f}",
+            label="cvd_slope", value=f"slope={_fmt_human_number(cvd_slope)}",
             delta=int(round(delta)), side="short",
         ))
 
@@ -1941,15 +1960,32 @@ def _derive_momentum_pulse(
         ))
 
     # 6) pierce（真穿越）
+    #
+    # 边界处理：``recent_window``（默认 5 根）内允许"上破和下破同时为 True"——
+    # 这通常意味着震荡盘里既插过上方阻力又插过下方支撑，是「假突破」特征
+    # 而非「单向真突破」。此时若两侧各 +10 分相互抵消反而误导（截图症状：
+    # cvd_slope 已偏空 + pierce 双向各 +10 → 结果 long=10/short=30 但 contribution
+    # 又写"上破/下破"两条同 ratio）。
+    #
+    # 正确口径：上下都 True → 视为「双向震荡假突破」，**不计入 score**，
+    # 只挂一条 hint contribution（delta=0），方向 both。override 仍按 broke_r 优先
+    # （由下面 §7 决定，保持与原逻辑兼容）。
     if pierce_atr_ratio is not None and pierce_atr_ratio >= mc["atr_break_min"]:
-        delta = w["pierce"]
-        if just_broke_resistance:
+        if just_broke_resistance and just_broke_support:
+            contributions.append(ContribItem(
+                label="pierce",
+                value=f"atr_ratio={pierce_atr_ratio:.2f} 双向震荡（不计入 score）",
+                delta=0, side="both",
+            ))
+        elif just_broke_resistance:
+            delta = w["pierce"]
             long_score += delta
             contributions.append(ContribItem(
                 label="pierce", value=f"atr_ratio={pierce_atr_ratio:.2f} 上破",
                 delta=int(round(delta)), side="long",
             ))
-        if just_broke_support:
+        elif just_broke_support:
+            delta = w["pierce"]
             short_score += delta
             contributions.append(ContribItem(
                 label="pierce", value=f"atr_ratio={pierce_atr_ratio:.2f} 下破",
