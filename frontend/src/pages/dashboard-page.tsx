@@ -95,6 +95,7 @@ export default function DashboardPage() {
             <MomentumPulseCardView
               card={snap.cards.momentum_pulse}
               tf={tf}
+              anchorTs={snap.timestamp}
             />
           </div>
           <div className="lg:col-span-7">
