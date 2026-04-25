@@ -62,10 +62,13 @@ class AIRuntimeConfig:
     jsonl_relpath: str = "data/ai_observations.jsonl"
 
     # 深度分析（Layer 4 · DeepAnalyzer）
+    # max_tokens：DeepSeek V4 系列单次输出硬上限 = 8192（输入侧 64K-128K，
+    # 与本字段无关）。深度研报必须把所有必填字段写完，给到 8192 上限以避免截断。
+    # timeout：L4 走 pro 时 thinking 段 + 长输出，120s 留足缓冲。
     deep_ring_size: int = 20
     deep_jsonl_relpath: str = "data/analysis_reports.jsonl"
-    deep_max_tokens: int = 4096
-    deep_timeout_s_l4: float = 90.0
+    deep_max_tokens: int = 8192
+    deep_timeout_s_l4: float = 120.0
 
     @property
     def api_key_masked(self) -> str:
@@ -160,6 +163,6 @@ def build_from_rules(
         deep_jsonl_relpath=str(
             storage_cfg.get("deep_jsonl_relpath", "data/analysis_reports.jsonl")
         ),
-        deep_max_tokens=int(observer_cfg.get("deep_max_tokens", 4096)),
-        deep_timeout_s_l4=float(observer_cfg.get("deep_timeout_s_l4", 90.0)),
+        deep_max_tokens=int(observer_cfg.get("deep_max_tokens", 8192)),
+        deep_timeout_s_l4=float(observer_cfg.get("deep_timeout_s_l4", 120.0)),
     )

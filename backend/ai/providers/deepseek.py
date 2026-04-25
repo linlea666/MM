@@ -178,6 +178,23 @@ class DeepSeekProvider(LLMProvider):
                 raw=resp.text[:1500],
             )
 
+        # 截断早检测：finish_reason=="length" 表示模型生成被 max_tokens 截断；
+        # 这种情况下 JSON 几乎必然不闭合，与其交给 _parse_strict_json 抛"12 errors"
+        # 这种隐晦错误，不如在这里就给出可执行的修复提示。
+        if finish_reason == "length":
+            logger.warning(
+                f"deepseek finish_reason=length: max_tokens={max_tokens} 不足以容纳完整输出 "
+                f"(model={model}, thinking={thinking_enabled}, completion_tokens="
+                f"{usage.get('completion_tokens', 0)})",
+                extra={"tags": ["AI"]},
+            )
+            raise ProviderError(
+                "parse",
+                f"deepseek 输出被 max_tokens 截断 (max_tokens={max_tokens}, model={model})；"
+                f"请在 /settings 调高 ai.observer.deep_max_tokens（DeepSeek V4 单次输出硬上限 8192）",
+                raw=text[:1500],
+            )
+
         try:
             parsed = _parse_strict_json(text, schema)
         except ProviderError as pe:
@@ -242,7 +259,7 @@ class DeepSeekProvider(LLMProvider):
 
 
 def _parse_strict_json(text: str, schema: type[T]) -> T:
-    """严格按 schema 解析，允许 LLM 前后包裹 ``\`\`\`json`` 等噪声。
+    r"""严格按 schema 解析，允许 LLM 前后包裹 ``\`\`\`json`` 等噪声。
 
     兜底策略：
     1. 直接 json.loads；

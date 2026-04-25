@@ -12,6 +12,9 @@ import {
   Crown,
   Loader2,
   RefreshCw,
+  ArrowUp,
+  ArrowDown,
+  Flame,
 } from "lucide-react";
 
 // ─────────────────────────────────────────────────────
@@ -35,31 +38,31 @@ const CATEGORIES: {
     key: "trend",
     label: "趋势族",
     icon: TrendingUp,
-    hint: "趋势纯度 / CVD 累积 / POC 漂移 / 饱和度 / 衰竭",
+    hint: "趋势纯度 / CVD 累积 / POC 漂移 / 饱和度 / 衰竭 / 波段四维",
   },
   {
     key: "value",
     label: "价值带族",
     icon: Layers,
-    hint: "HVN 节点 / 绝对区域 / Order Block / Volume Profile / 微观 POC",
+    hint: "HVN 节点 / Volume Profile / 绝对区域 / 订单块 / 微观 POC / 移动 VWAP",
   },
   {
     key: "liquidity",
     label: "流动性族",
     icon: Waves,
-    hint: "真空带 / 爆仓热力 / 爆仓燃料 / 散户止损 / 连环爆仓",
+    hint: "真空带 / 爆仓热力 / 爆仓燃料 / 连环爆仓 / 散户止损（按上下方分组）",
   },
   {
     key: "structure",
     label: "结构事件",
     icon: AlertTriangle,
-    hint: "CHoCH 破位 / 流动性扫荡 / 能量失衡 / 趋势衰竭",
+    hint: "CHoCH 破位 / 流动性扫荡 / 能量失衡 / 趋势衰竭近窗",
   },
   {
     key: "main_force",
     label: "主力族",
     icon: Crown,
-    hint: "聪明钱成本 / 跨所共振 / 巨鲸方向 / 移动 VWAP",
+    hint: "聪明钱成本 / 跨所共振 / 巨鲸方向 / 时间热力图",
   },
 ];
 
@@ -79,6 +82,11 @@ const fmt = (v: unknown, suffix = ""): string => {
   return JSON.stringify(v);
 };
 
+const fmtInt = (v: unknown): string => {
+  if (typeof v !== "number" || !Number.isFinite(v)) return "—";
+  return Math.round(v).toLocaleString();
+};
+
 const fmtPctSafe = (v: unknown): string => {
   if (typeof v !== "number" || !Number.isFinite(v)) return "—";
   return formatPct(v);
@@ -89,6 +97,118 @@ const fmtPrice = (v: unknown): string => {
   return formatPrice(v);
 };
 
+/** ms 时间戳 → "MM-DD HH:mm"。无效返回 "—"。 */
+const fmtTime = (v: unknown): string => {
+  if (typeof v !== "number" || !Number.isFinite(v) || v <= 0) return "—";
+  const d = new Date(v);
+  if (isNaN(d.getTime())) return "—";
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mi = String(d.getMinutes()).padStart(2, "0");
+  return `${mm}-${dd} ${hh}:${mi}`;
+};
+
+/** ms 时间戳 → "X 小时前/后" 或 "X 天前/后"。 */
+const fmtRelTime = (v: unknown): string => {
+  if (typeof v !== "number" || !Number.isFinite(v) || v <= 0) return "—";
+  const diff = v - Date.now();
+  const abs = Math.abs(diff);
+  const sign = diff >= 0 ? "后" : "前";
+  if (abs < 60 * 60 * 1000) return `${Math.round(abs / 60000)} 分钟${sign}`;
+  if (abs < 24 * 60 * 60 * 1000) return `${(abs / 3600000).toFixed(1)} 小时${sign}`;
+  return `${(abs / 86400000).toFixed(1)} 天${sign}`;
+};
+
+/** distance_pct 是 0-1 的小数（0.0214 = 2.14%）。 */
+const distanceTone = (pct: number | undefined | null): "above" | "below" | "neutral" => {
+  if (typeof pct !== "number" || !Number.isFinite(pct)) return "neutral";
+  if (pct > 0.0001) return "above";
+  if (pct < -0.0001) return "below";
+  return "neutral";
+};
+
+const fmtDistance = (pct: number | undefined | null): string => {
+  if (typeof pct !== "number" || !Number.isFinite(pct)) return "—";
+  const sign = pct > 0 ? "+" : "";
+  return `${sign}${(pct * 100).toFixed(2)}%`;
+};
+
+// ─────────────────────────────────────────────────────
+// 可视化原子组件
+// ─────────────────────────────────────────────────────
+
+/** 横向进度条，value/max 自动 clamp 到 [0,1]，支持 tone 染色。 */
+function ProgressBar({
+  value,
+  max = 1,
+  tone = "primary",
+  className,
+}: {
+  value: number | null | undefined;
+  max?: number;
+  tone?: "primary" | "good" | "bad" | "warn";
+  className?: string;
+}) {
+  const v = typeof value === "number" && Number.isFinite(value) ? value : 0;
+  const m = max > 0 ? max : 1;
+  const ratio = Math.max(0, Math.min(1, v / m));
+  const toneClass =
+    tone === "good"
+      ? "bg-emerald-400"
+      : tone === "bad"
+        ? "bg-rose-400"
+        : tone === "warn"
+          ? "bg-amber-400"
+          : "bg-primary";
+  return (
+    <div
+      className={cn(
+        "relative h-1.5 w-full overflow-hidden rounded-full bg-secondary/40",
+        className,
+      )}
+    >
+      <div
+        className={cn("absolute inset-y-0 left-0 rounded-full", toneClass)}
+        style={{ width: `${(ratio * 100).toFixed(2)}%` }}
+      />
+    </div>
+  );
+}
+
+/** 强度点：[●●●○○]，count = 多少个填充。 */
+function IntensityDots({
+  count,
+  max = 5,
+  tone = "warn",
+}: {
+  count: number;
+  max?: number;
+  tone?: "warn" | "bad" | "good";
+}) {
+  const dots = Array.from({ length: max });
+  const filled = Math.max(0, Math.min(max, count));
+  const fillTone =
+    tone === "bad"
+      ? "bg-rose-400"
+      : tone === "good"
+        ? "bg-emerald-400"
+        : "bg-amber-400";
+  return (
+    <span className="inline-flex items-center gap-0.5">
+      {dots.map((_, i) => (
+        <span
+          key={i}
+          className={cn(
+            "h-1.5 w-1.5 rounded-full",
+            i < filled ? fillTone : "bg-border/60",
+          )}
+        />
+      ))}
+    </span>
+  );
+}
+
 // ─────────────────────────────────────────────────────
 // 卡片基类
 // ─────────────────────────────────────────────────────
@@ -98,7 +218,7 @@ interface IndicatorCardProps {
   hint?: string;
   empty?: boolean;
   emptyText?: string;
-  rows?: { label: string; value: React.ReactNode; tone?: "good" | "bad" | "neutral" }[];
+  rows?: { label: string; value: React.ReactNode; tone?: "good" | "bad" | "neutral" | "warn" }[];
   children?: React.ReactNode;
   className?: string;
 }
@@ -143,6 +263,7 @@ function IndicatorCard({
                     "num font-medium",
                     r.tone === "good" && "text-emerald-400",
                     r.tone === "bad" && "text-rose-400",
+                    r.tone === "warn" && "text-amber-400",
                   )}
                 >
                   {r.value}
@@ -157,14 +278,116 @@ function IndicatorCard({
   );
 }
 
+/** 价位带行：价位 + 距现价% + side 染色 + 强度（可选）+ 备注（可选）。 */
+function BandRow({
+  price,
+  rangeBottom,
+  rangeTop,
+  distancePct,
+  side,
+  intensity,
+  intensityMax = 5,
+  extra,
+}: {
+  price?: number;
+  rangeBottom?: number;
+  rangeTop?: number;
+  distancePct?: number;
+  side?: string;
+  intensity?: number;
+  intensityMax?: number;
+  extra?: React.ReactNode;
+}) {
+  const tone = distanceTone(distancePct);
+  const sideTone =
+    side === "long_fuel" || side === "buy" || side === "bullish"
+      ? "text-emerald-400"
+      : side === "short_fuel" || side === "sell" || side === "bearish"
+        ? "text-rose-400"
+        : "text-muted-foreground";
+  return (
+    <div className="flex items-baseline justify-between gap-3 py-0.5 text-xs">
+      <div className="flex min-w-0 items-baseline gap-2">
+        <span className="num font-medium text-foreground/90">
+          {rangeBottom !== undefined && rangeTop !== undefined
+            ? `${fmtPrice(rangeBottom)} → ${fmtPrice(rangeTop)}`
+            : fmtPrice(price)}
+        </span>
+        {distancePct !== undefined && (
+          <span
+            className={cn(
+              "num text-[11px]",
+              tone === "above" && "text-rose-300",
+              tone === "below" && "text-emerald-300",
+              tone === "neutral" && "text-muted-foreground",
+            )}
+          >
+            {fmtDistance(distancePct)}
+          </span>
+        )}
+      </div>
+      <div className="flex items-baseline gap-2 text-muted-foreground">
+        {intensity !== undefined && (
+          <IntensityDots count={intensity} max={intensityMax} tone="warn" />
+        )}
+        {side && <span className={cn("num", sideTone)}>{side}</span>}
+        {extra}
+      </div>
+    </div>
+  );
+}
+
+/** 上方/下方分栏布局。bands 按 distance_pct 已分组传入。 */
+function BandSplitView({
+  above,
+  below,
+  renderRow,
+  emptyText = "暂无",
+}: {
+  above: Record<string, unknown>[];
+  below: Record<string, unknown>[];
+  renderRow: (b: Record<string, unknown>, i: number) => React.ReactNode;
+  emptyText?: string;
+}) {
+  return (
+    <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+      <div className="rounded-md border border-rose-500/20 bg-rose-500/5 p-2">
+        <div className="mb-1.5 flex items-center gap-1 text-[11px] font-medium text-rose-300">
+          <ArrowUp className="h-3 w-3" /> 上方 ({above.length})
+        </div>
+        <div className="max-h-72 space-y-0.5 overflow-auto pr-1">
+          {above.length === 0 ? (
+            <div className="text-xs text-muted-foreground">{emptyText}</div>
+          ) : (
+            above.map(renderRow)
+          )}
+        </div>
+      </div>
+      <div className="rounded-md border border-emerald-500/20 bg-emerald-500/5 p-2">
+        <div className="mb-1.5 flex items-center gap-1 text-[11px] font-medium text-emerald-300">
+          <ArrowDown className="h-3 w-3" /> 下方 ({below.length})
+        </div>
+        <div className="max-h-72 space-y-0.5 overflow-auto pr-1">
+          {below.length === 0 ? (
+            <div className="text-xs text-muted-foreground">{emptyText}</div>
+          ) : (
+            below.map(renderRow)
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─────────────────────────────────────────────────────
-// 五类 Tab 渲染
+// snapshot 访问助手
 // ─────────────────────────────────────────────────────
 
 interface SnapAccess {
   raw: Record<string, unknown>;
   get: <T = unknown>(key: string) => T | undefined;
   list: <T = Record<string, unknown>>(key: string) => T[];
+  lastPrice: number | undefined;
 }
 
 function makeAccess(raw: Record<string, unknown>): SnapAccess {
@@ -173,278 +396,619 @@ function makeAccess(raw: Record<string, unknown>): SnapAccess {
     get: <T = unknown,>(key: string) => raw[key] as T | undefined,
     list: <T = Record<string, unknown>,>(key: string) =>
       (Array.isArray(raw[key]) ? (raw[key] as T[]) : []) as T[],
+    lastPrice:
+      typeof raw["last_price"] === "number" && Number.isFinite(raw["last_price"] as number)
+        ? (raw["last_price"] as number)
+        : undefined,
   };
 }
 
-// ── 趋势族 ──
+/** 计算 (price - lastPrice)/lastPrice，无效返回 undefined。 */
+function distPct(price: unknown, lastPrice: number | undefined): number | undefined {
+  if (
+    typeof price !== "number" ||
+    !Number.isFinite(price) ||
+    typeof lastPrice !== "number" ||
+    !Number.isFinite(lastPrice) ||
+    lastPrice <= 0
+  )
+    return undefined;
+  return (price - lastPrice) / lastPrice;
+}
+
+/** 把 BandView/HeatmapBand/LiquidationFuelBand/VacuumBand/Cascade/Retail 等
+ * 单元归一化到 {center, distance, side?, intensity?, raw}，统一上下方分组。 */
+type BandLike = {
+  center: number;
+  bottom?: number;
+  top?: number;
+  distance?: number;
+  side?: string;
+  intensity?: number;
+  raw: Record<string, unknown>;
+};
+
+function partition(bands: BandLike[]): { above: BandLike[]; below: BandLike[] } {
+  const above = bands
+    .filter((b) => (b.distance ?? 0) > 0)
+    .sort((a, b) => (a.distance ?? 0) - (b.distance ?? 0));
+  const below = bands
+    .filter((b) => (b.distance ?? 0) <= 0)
+    .sort((a, b) => (b.distance ?? 0) - (a.distance ?? 0));
+  return { above, below };
+}
+
+// ─────────────────────────────────────────────────────
+// Tab 1 · 趋势族
+// ─────────────────────────────────────────────────────
+
 function TrendTab({ snap }: { snap: SnapAccess }) {
   const purity = snap.get<Record<string, unknown>>("trend_purity_last");
   const sat = snap.get<Record<string, unknown>>("trend_saturation");
   const cvd_sign = snap.get<string>("cvd_slope_sign");
-  const exh_streak = snap.get<number>("exhaustion_streak");
+  const exh_streak = snap.get<number>("exhaustion_streak") ?? 0;
   const exh_type = snap.get<string>("exhaustion_streak_type");
   const exh_last = snap.get<Record<string, unknown>>("trend_exhaustion_last");
+  const sp = snap.get<Record<string, unknown>>("segment_portrait");
+  const last_price = snap.lastPrice;
 
   return (
-    <div className="grid gap-4 lg:grid-cols-3 xl:grid-cols-4">
+    <div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-3">
+      {/* 趋势纯度 */}
       <IndicatorCard
         title="趋势纯度（trend_purity）"
-        hint="拐点频率 / 最大回撤"
+        hint="纯度 ∈ [0,100]：越高代表筹码方向越纯净"
         empty={!purity}
         emptyText="该周期无趋势纯度段"
-        rows={
-          purity && [
-            { label: "类型", value: fmt(purity.type) },
-            { label: "纯度", value: fmtPctSafe(purity.purity) },
-            { label: "段内最大回撤", value: fmtPctSafe(purity.max_dd_pct) },
-            { label: "持续根数", value: fmt(purity.bars) },
-          ]
-        }
-      />
+      >
+        {purity && (
+          <>
+            <div className="flex items-baseline justify-between text-xs">
+              <span className="text-muted-foreground">类型</span>
+              <span
+                className={cn(
+                  "num font-medium",
+                  purity.type === "Accumulation"
+                    ? "text-emerald-400"
+                    : "text-rose-400",
+                )}
+              >
+                {fmt(purity.type)}
+              </span>
+            </div>
+            <div className="flex items-baseline justify-between text-xs">
+              <span className="text-muted-foreground">纯度</span>
+              <span className="num font-medium">
+                {fmt(purity.purity)} / 100
+              </span>
+            </div>
+            <ProgressBar
+              value={Number(purity.purity ?? 0)}
+              max={100}
+              tone={Number(purity.purity ?? 0) >= 60 ? "good" : "warn"}
+              className="mb-2"
+            />
+            <div className="flex items-baseline justify-between text-xs">
+              <span className="text-muted-foreground">段均价</span>
+              <span className="num">{fmtPrice(purity.avg_price)}</span>
+            </div>
+            <div className="flex items-baseline justify-between text-xs">
+              <span className="text-muted-foreground">总成交量</span>
+              <span className="num">{fmtInt(purity.total_vol)}</span>
+            </div>
+            <div className="flex items-baseline justify-between text-xs">
+              <span className="text-muted-foreground">起始</span>
+              <span className="num text-[11px] text-muted-foreground">
+                {fmtTime(purity.start_time)}
+              </span>
+            </div>
+          </>
+        )}
+      </IndicatorCard>
 
+      {/* 趋势饱和度 */}
       <IndicatorCard
         title="趋势饱和度（trend_saturation）"
-        hint="离亡线/均线还有几根"
+        hint="progress ≥ 0.85 信号降一档；≥ 0.9 只能定 weak"
         empty={!sat}
         emptyText="无饱和度数据"
-        rows={
-          sat && [
-            { label: "状态", value: fmt(sat.status) },
-            { label: "至均价目标", value: fmt(sat.bars_to_avg) + " 根" },
-            { label: "至最大目标", value: fmt(sat.bars_to_max) + " 根" },
-            { label: "持续根数", value: fmt(sat.bars_held) },
-          ]
-        }
-      />
+      >
+        {sat && (() => {
+          const progress = Number(sat.progress ?? 0);
+          const tone = progress >= 0.9 ? "bad" : progress >= 0.85 ? "warn" : "good";
+          return (
+            <>
+              <div className="flex items-baseline justify-between text-xs">
+                <span className="text-muted-foreground">类型</span>
+                <span
+                  className={cn(
+                    "num font-medium",
+                    sat.type === "Accumulation"
+                      ? "text-emerald-400"
+                      : "text-rose-400",
+                  )}
+                >
+                  {fmt(sat.type)}
+                </span>
+              </div>
+              <div className="flex items-baseline justify-between text-xs">
+                <span className="text-muted-foreground">饱和度</span>
+                <span
+                  className={cn(
+                    "num font-medium",
+                    tone === "bad" && "text-rose-400",
+                    tone === "warn" && "text-amber-400",
+                    tone === "good" && "text-emerald-400",
+                  )}
+                >
+                  {fmtPctSafe(progress)}
+                </span>
+              </div>
+              <ProgressBar value={progress} max={1} tone={tone} className="mb-2" />
+              <div className="flex items-baseline justify-between text-xs">
+                <span className="text-muted-foreground">当前 / 平均量</span>
+                <span className="num">
+                  {fmtInt(sat.current_vol)} / {fmtInt(sat.avg_vol)}
+                </span>
+              </div>
+              <div className="flex items-baseline justify-between text-xs">
+                <span className="text-muted-foreground">起始</span>
+                <span className="num text-[11px] text-muted-foreground">
+                  {fmtTime(sat.start_time)}
+                </span>
+              </div>
+            </>
+          );
+        })()}
+      </IndicatorCard>
 
+      {/* CVD 累积 */}
       <IndicatorCard
         title="CVD 累积（cvd_slope）"
-        hint="lookback 窗内净买盘累积方向"
-        rows={[
-          {
-            label: "斜率方向",
-            value: cvd_sign ?? "—",
-            tone:
-              cvd_sign === "up" ? "good" : cvd_sign === "down" ? "bad" : "neutral",
-          },
-          {
-            label: "斜率值",
-            value: fmt(snap.get("cvd_slope")),
-          },
-          {
-            label: "收敛比",
-            value: fmtPctSafe(snap.get("cvd_converge_ratio")),
-          },
-          {
-            label: "imbalance 绿/红",
-            value: `${fmtPctSafe(snap.get("imbalance_green_ratio"))} / ${fmtPctSafe(snap.get("imbalance_red_ratio"))}`,
-          },
-        ]}
-      />
+        hint="lookback 窗内净买盘累积；converge 越小越收敛（多空对冲）"
+      >
+        <div className="flex items-baseline justify-between text-xs">
+          <span className="text-muted-foreground">斜率方向</span>
+          <span
+            className={cn(
+              "num font-medium",
+              cvd_sign === "up" && "text-emerald-400",
+              cvd_sign === "down" && "text-rose-400",
+            )}
+          >
+            {fmt(cvd_sign)}
+          </span>
+        </div>
+        <div className="flex items-baseline justify-between text-xs">
+          <span className="text-muted-foreground">斜率值</span>
+          <span className="num">{fmtInt(snap.get("cvd_slope"))}</span>
+        </div>
+        <div className="flex items-baseline justify-between text-xs">
+          <span className="text-muted-foreground">收敛比</span>
+          <span className="num">{fmtPctSafe(snap.get("cvd_converge_ratio"))}</span>
+        </div>
+        <ProgressBar
+          value={Number(snap.get("cvd_converge_ratio") ?? 0)}
+          max={1}
+          tone="primary"
+          className="mb-2"
+        />
+        <div className="mt-2 grid grid-cols-2 gap-2">
+          <div>
+            <div className="flex items-baseline justify-between text-[11px]">
+              <span className="text-emerald-400/80">imb 绿</span>
+              <span className="num">{fmtPctSafe(snap.get("imbalance_green_ratio"))}</span>
+            </div>
+            <ProgressBar
+              value={Number(snap.get("imbalance_green_ratio") ?? 0)}
+              tone="good"
+            />
+          </div>
+          <div>
+            <div className="flex items-baseline justify-between text-[11px]">
+              <span className="text-rose-400/80">imb 红</span>
+              <span className="num">{fmtPctSafe(snap.get("imbalance_red_ratio"))}</span>
+            </div>
+            <ProgressBar
+              value={Number(snap.get("imbalance_red_ratio") ?? 0)}
+              tone="bad"
+            />
+          </div>
+        </div>
+      </IndicatorCard>
 
+      {/* POC 漂移 + VWAP 偏离 */}
       <IndicatorCard
-        title="POC 漂移（poc_shift）"
-        hint="价值中枢方向"
-        rows={[
-          {
-            label: "趋势",
-            value: fmt(snap.get("poc_shift_trend")),
-            tone:
-              snap.get<string>("poc_shift_trend") === "up"
-                ? "good"
-                : snap.get<string>("poc_shift_trend") === "down"
-                  ? "bad"
-                  : "neutral",
-          },
-          {
-            label: "百分比变化",
-            value: fmtPctSafe(snap.get("poc_shift_delta_pct")),
-          },
-          {
-            label: "VWAP 位置",
-            value: fmtPrice(snap.get("vwap_last")),
-          },
-          {
-            label: "对 VWAP 偏离",
-            value: fmtPctSafe(snap.get("fair_value_delta_pct")),
-          },
-        ]}
-      />
+        title="POC 漂移 / VWAP 偏离"
+        hint="价值中枢方向 + 当前价相对公允价的乖离"
+      >
+        <div className="flex items-baseline justify-between text-xs">
+          <span className="text-muted-foreground">POC 漂移</span>
+          <span
+            className={cn(
+              "num font-medium",
+              snap.get<string>("poc_shift_trend") === "up" && "text-emerald-400",
+              snap.get<string>("poc_shift_trend") === "down" && "text-rose-400",
+            )}
+          >
+            {fmt(snap.get("poc_shift_trend"))}
+          </span>
+        </div>
+        <div className="flex items-baseline justify-between text-xs">
+          <span className="text-muted-foreground">百分比变化</span>
+          <span className="num">{fmtPctSafe(snap.get("poc_shift_delta_pct"))}</span>
+        </div>
+        <div className="mt-2 border-t border-border/30 pt-2">
+          <div className="flex items-baseline justify-between text-xs">
+            <span className="text-muted-foreground">VWAP 价位</span>
+            <span className="num">{fmtPrice(snap.get("vwap_last"))}</span>
+          </div>
+          <div className="flex items-baseline justify-between text-xs">
+            <span className="text-muted-foreground">VWAP 斜率</span>
+            <span className="num">{fmtPctSafe(snap.get("vwap_slope"))}</span>
+          </div>
+          <div className="flex items-baseline justify-between text-xs">
+            <span className="text-muted-foreground">乖离</span>
+            <span
+              className={cn(
+                "num font-medium",
+                Number(snap.get("fair_value_delta_pct") ?? 0) > 0
+                  ? "text-rose-400"
+                  : "text-emerald-400",
+              )}
+            >
+              {fmtPctSafe(snap.get("fair_value_delta_pct"))}
+            </span>
+          </div>
+        </div>
+      </IndicatorCard>
 
+      {/* 趋势衰竭 */}
       <IndicatorCard
         title="趋势衰竭（trend_exhaustion）"
-        hint="官方口径：连续 ≥3 根"
-        rows={[
-          {
-            label: "Streak 根数",
-            value: fmt(exh_streak),
-            tone: (exh_streak ?? 0) >= 3 ? "bad" : "neutral",
-          },
-          { label: "Streak 类型", value: fmt(exh_type) },
-          {
-            label: "最近一条 type",
-            value: exh_last ? fmt(exh_last.type) : "—",
-          },
-          {
-            label: "最近一条 strength",
-            value: exh_last ? fmt(exh_last.exhaustion) : "—",
-          },
-        ]}
-      />
+        hint="官方口径：连续 ≥3 根 → 衰竭警报"
+      >
+        <div className="flex items-baseline justify-between text-xs">
+          <span className="text-muted-foreground">Streak</span>
+          <span
+            className={cn(
+              "num font-medium",
+              exh_streak >= 3 && "text-rose-400",
+            )}
+          >
+            {fmtInt(exh_streak)} 根 · {fmt(exh_type)}
+          </span>
+        </div>
+        <ProgressBar
+          value={Math.min(exh_streak, 5)}
+          max={5}
+          tone={exh_streak >= 3 ? "bad" : "warn"}
+          className="mb-2"
+        />
+        {exh_last ? (
+          <>
+            <div className="flex items-baseline justify-between text-xs">
+              <span className="text-muted-foreground">最近一条 type</span>
+              <span
+                className={cn(
+                  "num",
+                  exh_last.type === "Accumulation"
+                    ? "text-emerald-400"
+                    : "text-rose-400",
+                )}
+              >
+                {fmt(exh_last.type)}
+              </span>
+            </div>
+            <div className="flex items-baseline justify-between text-xs">
+              <span className="text-muted-foreground">衰竭值</span>
+              <span className="num">{fmt(exh_last.exhaustion)}</span>
+            </div>
+            <div className="flex items-baseline justify-between text-xs">
+              <span className="text-muted-foreground">时间</span>
+              <span className="num text-[11px] text-muted-foreground">
+                {fmtTime(exh_last.ts)}
+              </span>
+            </div>
+          </>
+        ) : (
+          <div className="text-xs text-muted-foreground">无最新衰竭事件</div>
+        )}
+      </IndicatorCard>
 
+      {/* 趋势 ROI 耗尽 */}
       <IndicatorCard
         title="趋势 ROI 耗尽（roi_segment）"
-        hint="目标价 + 死亡线"
-        rows={[
-          {
-            label: "T1 平均目标",
-            value: fmtPrice(
-              snap.get<Record<string, unknown>>("segment_portrait")
-                ?.roi_limit_avg_price,
-            ),
-          },
-          {
-            label: "T2 极限目标",
-            value: fmtPrice(
-              snap.get<Record<string, unknown>>("segment_portrait")
-                ?.roi_limit_max_price,
-            ),
-          },
-          {
-            label: "至均根数",
-            value: fmt(
-              snap.get<Record<string, unknown>>("segment_portrait")?.bars_to_avg,
-            ),
-          },
-          {
-            label: "至亡线",
-            value: fmt(
-              snap.get<Record<string, unknown>>("segment_portrait")?.bars_to_max,
-            ),
-          },
-        ]}
-      />
+        hint="历史大数据驱动的目标价 + 距现价 %"
+        empty={!sp || (sp.roi_limit_avg_price === undefined && sp.roi_limit_max_price === undefined)}
+      >
+        {sp && (
+          <>
+            <div className="flex items-baseline justify-between text-xs">
+              <span className="text-muted-foreground">T1 平均目标</span>
+              <span className="num">
+                {fmtPrice(sp.roi_limit_avg_price)}
+                <span className="ml-2 text-[11px] text-muted-foreground">
+                  {fmtDistance(distPct(sp.roi_limit_avg_price, last_price))}
+                </span>
+              </span>
+            </div>
+            <div className="flex items-baseline justify-between text-xs">
+              <span className="text-muted-foreground">T2 极限目标</span>
+              <span className="num">
+                {fmtPrice(sp.roi_limit_max_price)}
+                <span className="ml-2 text-[11px] text-muted-foreground">
+                  {fmtDistance(distPct(sp.roi_limit_max_price, last_price))}
+                </span>
+              </span>
+            </div>
+            <div className="mt-2 border-t border-border/30 pt-2">
+              <div className="flex items-baseline justify-between text-xs">
+                <span className="text-muted-foreground">至均根数</span>
+                <span className="num">{fmt(sp.bars_to_avg)}</span>
+              </div>
+              <div className="flex items-baseline justify-between text-xs">
+                <span className="text-muted-foreground">至亡线根数</span>
+                <span
+                  className={cn(
+                    "num",
+                    typeof sp.bars_to_max === "number" &&
+                      (sp.bars_to_max as number) <= 3 &&
+                      "text-rose-400",
+                  )}
+                >
+                  {fmt(sp.bars_to_max)}
+                </span>
+              </div>
+            </div>
+          </>
+        )}
+      </IndicatorCard>
 
+      {/* 最大回撤容忍 */}
       <IndicatorCard
         title="最大回撤容忍（dd_tolerance）"
-        hint="护城河 + 击穿次数"
-        rows={[
-          {
-            label: "护城河当前",
-            value: fmtPrice(
-              snap.get<Record<string, unknown>>("segment_portrait")
-                ?.dd_trailing_current,
-            ),
-          },
-          {
-            label: "允许回撤",
-            value: fmtPctSafe(
-              snap.get<Record<string, unknown>>("segment_portrait")?.dd_limit_pct,
-            ),
-          },
-          {
-            label: "击穿次数",
-            value: fmt(
-              snap.get<Record<string, unknown>>("segment_portrait")
-                ?.dd_pierce_count,
-            ),
-          },
-        ]}
-      />
+        hint="护城河 + 击穿次数（黄色图钉）"
+        empty={!sp || sp.dd_trailing_current === undefined}
+      >
+        {sp && (
+          <>
+            <div className="flex items-baseline justify-between text-xs">
+              <span className="text-muted-foreground">护城河当前</span>
+              <span className="num font-medium">
+                {fmtPrice(sp.dd_trailing_current)}
+              </span>
+            </div>
+            <div className="flex items-baseline justify-between text-xs">
+              <span className="text-muted-foreground">距现价</span>
+              <span className="num">
+                {fmtDistance(distPct(sp.dd_trailing_current, last_price))}
+              </span>
+            </div>
+            <div className="mt-2 border-t border-border/30 pt-2">
+              <div className="flex items-baseline justify-between text-xs">
+                <span className="text-muted-foreground">允许最大回撤</span>
+                <span className="num">{fmtPctSafe(sp.dd_limit_pct)}</span>
+              </div>
+              <div className="flex items-baseline justify-between text-xs">
+                <span className="text-muted-foreground">击穿次数</span>
+                <span
+                  className={cn(
+                    "num font-medium",
+                    Number(sp.dd_pierce_count ?? 0) > 0 && "text-amber-400",
+                  )}
+                >
+                  {fmtInt(sp.dd_pierce_count)}
+                </span>
+              </div>
+            </div>
+          </>
+        )}
+      </IndicatorCard>
 
+      {/* 时间耗尽窗口 */}
       <IndicatorCard
         title="时间耗尽窗口（time_exhaustion）"
-        hint="绝对时间死亡线"
-        rows={[
-          {
-            label: "至均时间",
-            value: fmt(
-              snap.get<Record<string, unknown>>("segment_portrait")?.time_avg_ts,
-            ),
-          },
-          {
-            label: "至极限",
-            value: fmt(
-              snap.get<Record<string, unknown>>("segment_portrait")?.time_max_ts,
-            ),
-          },
-          {
-            label: "极限洗盘价",
-            value: fmtPrice(
-              snap.get<Record<string, unknown>>("segment_portrait")
-                ?.pain_max_price,
-            ),
-          },
-        ]}
-      />
+        hint="本波段绝对时间锚点：到平均寿命 / 死亡线"
+        empty={!sp || (sp.time_avg_ts === undefined && sp.time_max_ts === undefined)}
+      >
+        {sp && (
+          <>
+            <div className="flex items-baseline justify-between text-xs">
+              <span className="text-muted-foreground">至平均寿命</span>
+              <span className="num">{fmtTime(sp.time_avg_ts)}</span>
+            </div>
+            <div className="text-right text-[11px] text-muted-foreground">
+              {fmtRelTime(sp.time_avg_ts)}
+            </div>
+            <div className="flex items-baseline justify-between text-xs">
+              <span className="text-muted-foreground">至死亡线</span>
+              <span
+                className={cn(
+                  "num font-medium",
+                  typeof sp.time_max_ts === "number" &&
+                    sp.time_max_ts < Date.now() + 6 * 3600 * 1000 &&
+                    "text-rose-400",
+                )}
+              >
+                {fmtTime(sp.time_max_ts)}
+              </span>
+            </div>
+            <div className="text-right text-[11px] text-muted-foreground">
+              {fmtRelTime(sp.time_max_ts)}
+            </div>
+            <div className="mt-2 border-t border-border/30 pt-2">
+              <div className="flex items-baseline justify-between text-xs">
+                <span className="text-muted-foreground">极限洗盘价</span>
+                <span className="num font-medium">
+                  {fmtPrice(sp.pain_max_price)}
+                </span>
+              </div>
+              <div className="flex items-baseline justify-between text-xs">
+                <span className="text-muted-foreground">距现价</span>
+                <span className="num">
+                  {fmtDistance(distPct(sp.pain_max_price, last_price))}
+                </span>
+              </div>
+            </div>
+          </>
+        )}
+      </IndicatorCard>
     </div>
   );
 }
 
-// ── 价值带族 ──
+// ─────────────────────────────────────────────────────
+// Tab 2 · 价值带族
+// ─────────────────────────────────────────────────────
+
 function ValueTab({ snap }: { snap: SnapAccess }) {
   const hvn = snap.list<Record<string, unknown>>("hvn_nodes");
   const az = snap.list<Record<string, unknown>>("absolute_zones");
   const ob = snap.list<Record<string, unknown>>("order_blocks");
   const micro = snap.list<Record<string, unknown>>("micro_pocs");
   const vp = snap.get<Record<string, unknown>>("volume_profile");
+  const vwap = snap.get<Record<string, unknown>>("trailing_vwap_last");
+  const last_price = snap.lastPrice;
+
+  const hvnMaxVol = useMemo(
+    () =>
+      hvn.reduce(
+        (m, n) => Math.max(m, Number(n.volume) || 0),
+        0,
+      ),
+    [hvn],
+  );
+  const microMaxVol = useMemo(
+    () =>
+      micro.reduce(
+        (m, n) => Math.max(m, Number(n.volume) || 0),
+        0,
+      ),
+    [micro],
+  );
 
   return (
     <div className="grid gap-4 lg:grid-cols-2">
+      {/* HVN 节点 */}
       <IndicatorCard
         title={`HVN 节点（hvn_nodes · ${hvn.length}）`}
-        hint="高成交量价位（成本中枢）"
+        hint="高成交量价位 = 成本中枢，按 rank 排列"
         empty={hvn.length === 0}
       >
-        <div className="mt-2 max-h-72 space-y-1 overflow-auto pr-1">
+        <div className="mt-1 max-h-72 space-y-1.5 overflow-auto pr-1">
           {hvn.slice(0, 12).map((n, i) => (
-            <div key={i} className="flex items-baseline justify-between text-xs">
-              <span className="num">{fmtPrice(n.price)}</span>
-              <span className="text-muted-foreground">
-                vol={fmt(n.volume)} · z={fmt(n.zscore)}
-              </span>
+            <div key={i}>
+              <div className="flex items-baseline justify-between text-xs">
+                <span className="flex items-baseline gap-2">
+                  <span className="text-[11px] text-muted-foreground">
+                    #{fmt(n.rank)}
+                  </span>
+                  <span className="num font-medium">{fmtPrice(n.price)}</span>
+                  <span className="text-[11px] text-muted-foreground">
+                    {fmtDistance(distPct(n.price, last_price))}
+                  </span>
+                </span>
+                <span className="text-[11px] text-muted-foreground">
+                  vol={fmtInt(n.volume)}
+                </span>
+              </div>
+              <ProgressBar
+                value={Number(n.volume) || 0}
+                max={hvnMaxVol || 1}
+                tone="primary"
+              />
             </div>
           ))}
         </div>
       </IndicatorCard>
 
+      {/* Volume Profile */}
       <IndicatorCard
-        title={`Volume Profile（${vp ? "1" : "0"}）`}
-        hint="POC + Value Area + TopN 峰"
+        title="筹码分布（volume_profile）"
+        hint="POC + Value Area + Top 节点；越纯越有压制力"
         empty={!vp}
       >
         {vp && (
           <div className="space-y-1.5">
             <div className="flex items-baseline justify-between text-xs">
+              <span className="text-muted-foreground">价位位置</span>
+              <span
+                className={cn(
+                  "num font-medium",
+                  vp.last_price_position === "above_va" && "text-rose-300",
+                  vp.last_price_position === "below_va" && "text-emerald-300",
+                  vp.last_price_position === "in_va" && "text-amber-300",
+                )}
+              >
+                {fmt(vp.last_price_position)}
+              </span>
+            </div>
+            <div className="flex items-baseline justify-between text-xs">
               <span className="text-muted-foreground">POC</span>
-              <span className="num font-medium">{fmtPrice(vp.poc_price)}</span>
+              <span className="num font-medium">
+                {fmtPrice(vp.poc_price)}
+                <span className="ml-2 text-[11px] text-muted-foreground">
+                  {fmtDistance(Number(vp.poc_distance_pct))}
+                </span>
+              </span>
             </div>
             <div className="flex items-baseline justify-between text-xs">
-              <span className="text-muted-foreground">Value Area High</span>
-              <span className="num">{fmtPrice(vp.va_high)}</span>
+              <span className="text-muted-foreground">VA High</span>
+              <span className="num">
+                {fmtPrice(vp.value_area_high)}
+                <span className="ml-2 text-[11px] text-muted-foreground">
+                  {fmtDistance(distPct(vp.value_area_high, last_price))}
+                </span>
+              </span>
             </div>
             <div className="flex items-baseline justify-between text-xs">
-              <span className="text-muted-foreground">Value Area Low</span>
-              <span className="num">{fmtPrice(vp.va_low)}</span>
+              <span className="text-muted-foreground">VA Low</span>
+              <span className="num">
+                {fmtPrice(vp.value_area_low)}
+                <span className="ml-2 text-[11px] text-muted-foreground">
+                  {fmtDistance(distPct(vp.value_area_low, last_price))}
+                </span>
+              </span>
             </div>
             <div className="flex items-baseline justify-between text-xs">
               <span className="text-muted-foreground">VA 占比</span>
-              <span className="num">{fmtPctSafe(vp.va_volume_ratio)}</span>
+              <span className="num">{fmtPctSafe(vp.value_area_volume_ratio)}</span>
             </div>
-            <div className="mt-2 text-[11px] text-muted-foreground">
-              Top 峰：
+            <ProgressBar
+              value={Number(vp.value_area_volume_ratio ?? 0)}
+              max={1}
+              tone="good"
+              className="mb-2"
+            />
+            <div className="border-t border-border/30 pt-2 text-[11px] text-muted-foreground">
+              Top 节点：
             </div>
             <div className="space-y-0.5">
-              {(vp.top_peaks as Record<string, unknown>[] | undefined)
+              {(vp.top_nodes as Record<string, unknown>[] | undefined)
                 ?.slice(0, 5)
                 .map((p, i) => (
                   <div
                     key={i}
                     className="flex items-baseline justify-between text-xs"
                   >
-                    <span className="num">{fmtPrice(p.price)}</span>
-                    <span className="text-muted-foreground">
-                      vol={fmt(p.volume)}
+                    <span className="num">
+                      {fmtPrice(p.price)}
+                      <span className="ml-2 text-[11px] text-muted-foreground">
+                        {fmtDistance(distPct(p.price, last_price))}
+                      </span>
+                    </span>
+                    <span className="text-[11px] text-muted-foreground">
+                      <span
+                        className={cn(
+                          p.dominant_side === "buy" && "text-emerald-400",
+                          p.dominant_side === "sell" && "text-rose-400",
+                        )}
+                      >
+                        {fmt(p.dominant_side)}
+                      </span>
+                      {" · "}
+                      纯度 {fmtPctSafe(p.purity_ratio)}
                     </span>
                   </div>
                 ))}
@@ -453,294 +1017,529 @@ function ValueTab({ snap }: { snap: SnapAccess }) {
         )}
       </IndicatorCard>
 
+      {/* Absolute Zones */}
       <IndicatorCard
-        title={`Absolute Zones（${az.length}）`}
-        hint="高时间框架强支撑/压力"
+        title={`绝对区域（absolute_zones · ${az.length}）`}
+        hint="高时间框架强支撑/压力，bottom→top 区间"
         empty={az.length === 0}
       >
-        <div className="mt-2 max-h-72 space-y-1 overflow-auto pr-1">
-          {az.slice(0, 12).map((z, i) => (
-            <div key={i} className="flex items-baseline justify-between text-xs">
-              <span className="num">
-                {fmtPrice(z.bottom_price)} → {fmtPrice(z.top_price)}
-              </span>
-              <span className="text-muted-foreground">{fmt(z.type)}</span>
-            </div>
-          ))}
+        <div className="mt-1 max-h-72 space-y-0.5 overflow-auto pr-1">
+          {az.slice(0, 14).map((z, i) => {
+            const center =
+              (Number(z.bottom_price) + Number(z.top_price)) / 2;
+            return (
+              <BandRow
+                key={i}
+                rangeBottom={Number(z.bottom_price)}
+                rangeTop={Number(z.top_price)}
+                distancePct={distPct(center, last_price)}
+                side={String(z.type)}
+              />
+            );
+          })}
         </div>
       </IndicatorCard>
 
+      {/* Order Blocks */}
       <IndicatorCard
-        title={`Order Blocks（${ob.length}）`}
-        hint="机构订单块"
+        title={`订单块（order_blocks · ${ob.length}）`}
+        hint="机构订单块（单价位段：avg_price + volume + type）"
         empty={ob.length === 0}
       >
-        <div className="mt-2 max-h-72 space-y-1 overflow-auto pr-1">
-          {ob.slice(0, 12).map((z, i) => (
-            <div key={i} className="flex items-baseline justify-between text-xs">
-              <span className="num">
-                {fmtPrice(z.bottom_price)} → {fmtPrice(z.top_price)}
+        <div className="mt-1 max-h-72 space-y-0.5 overflow-auto pr-1">
+          {ob.slice(0, 14).map((z, i) => (
+            <div
+              key={i}
+              className="flex items-baseline justify-between gap-2 text-xs"
+            >
+              <span className="flex items-baseline gap-2">
+                <span className="num font-medium">{fmtPrice(z.avg_price)}</span>
+                <span className="text-[11px] text-muted-foreground">
+                  {fmtDistance(distPct(z.avg_price, last_price))}
+                </span>
               </span>
-              <span className="text-muted-foreground">{fmt(z.side)}</span>
+              <span className="text-[11px] text-muted-foreground">
+                <span
+                  className={cn(
+                    z.type === "Accumulation" && "text-emerald-400",
+                    z.type === "Distribution" && "text-rose-400",
+                  )}
+                >
+                  {fmt(z.type)}
+                </span>
+                {" · vol="}
+                {fmtInt(z.volume)}
+              </span>
             </div>
           ))}
         </div>
       </IndicatorCard>
 
+      {/* 微观 POC */}
       <IndicatorCard
-        title={`微观 POC（${micro.length}）`}
-        hint="本轮 K 线集中成交价"
+        title={`微观 POC（micro_pocs · ${micro.length}）`}
+        hint="本轮 K 线集中成交价，按 vol 横向条形对比"
         empty={micro.length === 0}
       >
-        <div className="mt-2 max-h-72 space-y-1 overflow-auto pr-1">
+        <div className="mt-1 max-h-72 space-y-1.5 overflow-auto pr-1">
           {micro.slice(0, 12).map((m, i) => (
-            <div key={i} className="flex items-baseline justify-between text-xs">
-              <span className="num">{fmtPrice(m.poc_price)}</span>
-              <span className="text-muted-foreground">
-                vol={fmt(m.volume)}
-              </span>
+            <div key={i}>
+              <div className="flex items-baseline justify-between text-xs">
+                <span className="num font-medium">
+                  {fmtPrice(m.poc_price)}
+                  <span className="ml-2 text-[11px] text-muted-foreground">
+                    {fmtDistance(distPct(m.poc_price, last_price))}
+                  </span>
+                </span>
+                <span className="text-[11px] text-muted-foreground">
+                  <span
+                    className={cn(
+                      m.type === "Accumulation" && "text-emerald-400",
+                      m.type === "Distribution" && "text-rose-400",
+                    )}
+                  >
+                    {fmt(m.type)}
+                  </span>
+                  {" · vol="}
+                  {fmtInt(m.volume)}
+                </span>
+              </div>
+              <ProgressBar
+                value={Number(m.volume) || 0}
+                max={microMaxVol || 1}
+                tone={m.type === "Accumulation" ? "good" : "bad"}
+              />
             </div>
           ))}
         </div>
       </IndicatorCard>
 
+      {/* 移动 VWAP */}
       <IndicatorCard
         title="移动 VWAP（trailing_vwap）"
-        hint="Anchor 后的 VWAP 推移"
-        empty={!snap.get("trailing_vwap_last")}
+        hint="Anchor 后的 VWAP 推移：support / resistance 双线"
+        empty={!vwap}
       >
-        <div className="space-y-1.5">
-          <div className="flex items-baseline justify-between text-xs">
-            <span className="text-muted-foreground">最新 VWAP</span>
-            <span className="num font-medium">
-              {fmtPrice(
-                snap.get<Record<string, unknown>>("trailing_vwap_last")?.vwap,
-              )}
-            </span>
-          </div>
-          <div className="flex items-baseline justify-between text-xs">
-            <span className="text-muted-foreground">价 vs VWAP</span>
-            <span className="num">
-              {fmtPctSafe(snap.get("fair_value_delta_pct"))}
-            </span>
-          </div>
-        </div>
+        {vwap && (
+          <>
+            <div className="flex items-baseline justify-between text-xs">
+              <span className="text-muted-foreground">阻力（resistance）</span>
+              <span className="num font-medium text-rose-300">
+                {fmtPrice(vwap.resistance)}
+                <span className="ml-2 text-[11px] text-muted-foreground">
+                  {fmtDistance(distPct(vwap.resistance, last_price))}
+                </span>
+              </span>
+            </div>
+            <div className="flex items-baseline justify-between text-xs">
+              <span className="text-muted-foreground">支撑（support）</span>
+              <span className="num font-medium text-emerald-300">
+                {fmtPrice(vwap.support)}
+                <span className="ml-2 text-[11px] text-muted-foreground">
+                  {fmtDistance(distPct(vwap.support, last_price))}
+                </span>
+              </span>
+            </div>
+            <div className="flex items-baseline justify-between text-xs">
+              <span className="text-muted-foreground">事件时间</span>
+              <span className="num text-[11px] text-muted-foreground">
+                {fmtTime(vwap.ts)}
+              </span>
+            </div>
+            <div className="mt-2 border-t border-border/30 pt-2">
+              <div className="flex items-baseline justify-between text-xs">
+                <span className="text-muted-foreground">价 vs VWAP</span>
+                <span
+                  className={cn(
+                    "num",
+                    Number(snap.get("fair_value_delta_pct") ?? 0) > 0
+                      ? "text-rose-400"
+                      : "text-emerald-400",
+                  )}
+                >
+                  {fmtPctSafe(snap.get("fair_value_delta_pct"))}
+                </span>
+              </div>
+            </div>
+          </>
+        )}
       </IndicatorCard>
     </div>
   );
 }
 
-// ── 流动性族 ──
+// ─────────────────────────────────────────────────────
+// Tab 3 · 流动性族（爆仓带类按上下方分组）
+// ─────────────────────────────────────────────────────
+
 function LiquidityTab({ snap }: { snap: SnapAccess }) {
+  const last_price = snap.lastPrice;
   const vacs = snap.list<Record<string, unknown>>("vacuums");
   const heat = snap.list<Record<string, unknown>>("heatmap");
   const fuel = snap.list<Record<string, unknown>>("liquidation_fuel");
   const cascade = snap.list<Record<string, unknown>>("cascade_bands");
   const retail = snap.list<Record<string, unknown>>("retail_stop_bands");
 
-  const renderBands = (bands: Record<string, unknown>[]) => (
-    <div className="mt-2 max-h-72 space-y-1 overflow-auto pr-1">
-      {bands.slice(0, 12).map((b, i) => (
-        <div
-          key={i}
-          className="flex items-baseline justify-between gap-2 text-xs"
-        >
-          <span className="num">
-            {fmtPrice(b.bottom_price)} → {fmtPrice(b.top_price)}
-          </span>
-          <span className="text-muted-foreground">
-            {fmt(b.side)} · vol={fmt(b.volume)}
-          </span>
-        </div>
-      ))}
-    </div>
+  // 真空带：低成交量穿越快，单元 = {low, high}
+  const vacBands: BandLike[] = useMemo(
+    () =>
+      vacs.map((v) => {
+        const lo = Number(v.low);
+        const hi = Number(v.high);
+        const center = (lo + hi) / 2;
+        return {
+          center,
+          bottom: lo,
+          top: hi,
+          distance: distPct(center, last_price),
+          raw: v,
+        };
+      }),
+    [vacs, last_price],
   );
 
+  // 爆仓热力：单价位 + intensity
+  const heatBands: BandLike[] = useMemo(
+    () =>
+      heat.map((h) => ({
+        center: Number(h.price),
+        distance: distPct(h.price, last_price),
+        side: String(h.type),
+        intensity: Math.round(Number(h.intensity ?? 0) * 5),
+        raw: h,
+      })),
+    [heat, last_price],
+  );
+
+  // 爆仓燃料：bottom → top + fuel
+  const fuelMaxFuel = useMemo(
+    () => fuel.reduce((m, f) => Math.max(m, Number(f.fuel) || 0), 0),
+    [fuel],
+  );
+  const fuelBands: BandLike[] = useMemo(
+    () =>
+      fuel.map((f) => {
+        const bot = Number(f.bottom);
+        const top = Number(f.top);
+        const center = (bot + top) / 2;
+        return {
+          center,
+          bottom: bot,
+          top: top,
+          distance: distPct(center, last_price),
+          raw: f,
+        };
+      }),
+    [fuel, last_price],
+  );
+
+  // 连环爆仓 / 散户止损：BandView，已含 distance_pct + signal_count + side
+  const toBandLike = (b: Record<string, unknown>): BandLike => ({
+    center: Number(b.avg_price),
+    bottom: Number(b.bottom_price),
+    top: Number(b.top_price),
+    distance:
+      typeof b.distance_pct === "number"
+        ? (b.distance_pct as number)
+        : distPct(b.avg_price, last_price),
+    side: String(b.side ?? ""),
+    intensity:
+      typeof b.signal_count === "number" ? (b.signal_count as number) : undefined,
+    raw: b,
+  });
+  const cascadeBands = useMemo(() => cascade.map(toBandLike), [cascade, last_price]);
+  const retailBands = useMemo(() => retail.map(toBandLike), [retail, last_price]);
+
+  const vacSplit = partition(vacBands);
+  const heatSplit = partition(heatBands);
+  const fuelSplit = partition(fuelBands);
+  const cascadeSplit = partition(cascadeBands);
+  const retailSplit = partition(retailBands);
+
   return (
-    <div className="grid gap-4 lg:grid-cols-2">
-      <IndicatorCard
-        title={`真空带（vacuums · ${vacs.length}）`}
-        hint="低成交量 → 价格穿越快"
-        empty={vacs.length === 0}
-      >
-        {renderBands(vacs)}
-      </IndicatorCard>
-
-      <IndicatorCard
-        title={`爆仓热力（liq_heatmap · ${heat.length}）`}
-        hint="清算预测密度"
-        empty={heat.length === 0}
-      >
-        {renderBands(heat)}
-      </IndicatorCard>
-
-      <IndicatorCard
-        title={`爆仓燃料（liquidation_fuel · ${fuel.length}）`}
-        hint="累积清算能量"
-        empty={fuel.length === 0}
-      >
-        {renderBands(fuel)}
-      </IndicatorCard>
-
+    <div className="grid gap-4">
+      {/* 连环爆仓带 — 用户最关心，置顶 */}
       <IndicatorCard
         title={`连环爆仓带（cascade · ${cascade.length}）`}
-        hint="2/4/8 倍连环触发位"
+        hint="2/4/8 倍连环触发位；上方 = 空头燃料，下方 = 多头燃料；💣 = signal_count 强度"
         empty={cascade.length === 0}
       >
-        {renderBands(cascade)}
-      </IndicatorCard>
-
-      <IndicatorCard
-        title={`散户止损带（retail · ${retail.length}）`}
-        hint="磁吸方向（主力扫货目标）"
-        empty={retail.length === 0}
-        className="lg:col-span-2"
-      >
-        {renderBands(retail)}
-      </IndicatorCard>
-    </div>
-  );
-}
-
-// ── 结构事件族 ──
-function StructureTab({ snap }: { snap: SnapAccess }) {
-  const choch = snap.list<Record<string, unknown>>("choch_recent");
-  const pi_recent = snap.list<Record<string, unknown>>("power_imbalance_recent");
-  const exh_recent = snap.list<Record<string, unknown>>("trend_exhaustion_recent");
-
-  return (
-    <div className="grid gap-4 lg:grid-cols-2">
-      <IndicatorCard
-        title={`CHoCH 破位 / 突破（${choch.length}）`}
-        hint="机构破坏（破）/ 突破（突）"
-        empty={choch.length === 0}
-      >
-        <div className="mt-2 max-h-72 space-y-1 overflow-auto pr-1">
-          {choch.slice(0, 12).map((c, i) => (
-            <div key={i} className="flex items-baseline justify-between text-xs">
-              <span className="num">{fmtPrice(c.level_price)}</span>
-              <span className="text-muted-foreground">
-                {fmt(c.kind)}_{fmt(c.direction)} · {fmt(c.bars_since)} 根前
-              </span>
-            </div>
-          ))}
-        </div>
-      </IndicatorCard>
-
-      <IndicatorCard
-        title="流动性扫荡（liquidity_sweep）"
-        hint="近期次数 + 最新事件"
-        rows={[
-          {
-            label: "近窗扫荡次数",
-            value: fmt(snap.get("sweep_count_recent")),
-          },
-          {
-            label: "最新方向",
-            value: fmt(
-              snap.get<Record<string, unknown>>("sweep_last")?.direction,
-            ),
-          },
-          {
-            label: "最新强度",
-            value: fmt(
-              snap.get<Record<string, unknown>>("sweep_last")?.strength,
-            ),
-          },
-        ]}
-      />
-
-      <IndicatorCard
-        title={`能量失衡（power_imbalance · 近 ${pi_recent.length}）`}
-        hint="官方：连续 ≥3 根 → 行情发动"
-        empty={pi_recent.length === 0}
-      >
-        <div className="space-y-1.5">
-          <div className="flex items-baseline justify-between text-xs">
-            <span className="text-muted-foreground">Streak</span>
-            <span className="num font-medium">
-              {fmt(snap.get("power_imbalance_streak"))} 根 ·{" "}
-              {fmt(snap.get("power_imbalance_streak_side"))}
-            </span>
-          </div>
-          <div className="mt-2 max-h-56 space-y-1 overflow-auto pr-1">
-            {pi_recent.slice(0, 12).map((p, i) => (
-              <div
-                key={i}
-                className="flex items-baseline justify-between text-xs"
-              >
-                <span className="num">{fmt(p.ratio)}</span>
-                <span className="text-muted-foreground">
-                  {fmt(p.imbalance_side)} · {fmt(p.ts)}
+        <BandSplitView
+          above={cascadeSplit.above.map((b) => b.raw)}
+          below={cascadeSplit.below.map((b) => b.raw)}
+          renderRow={(b, i) => (
+            <BandRow
+              key={i}
+              price={Number(b.avg_price)}
+              distancePct={
+                typeof b.distance_pct === "number"
+                  ? (b.distance_pct as number)
+                  : distPct(b.avg_price, last_price)
+              }
+              side={String(b.side ?? "")}
+              intensity={
+                typeof b.signal_count === "number"
+                  ? (b.signal_count as number)
+                  : undefined
+              }
+              intensityMax={5}
+              extra={
+                <span className="text-[10px] text-muted-foreground">
+                  {fmtPrice(b.bottom_price)} → {fmtPrice(b.top_price)}
                 </span>
-              </div>
-            ))}
-          </div>
-        </div>
+              }
+            />
+          )}
+        />
       </IndicatorCard>
 
+      {/* 散户止损带 */}
       <IndicatorCard
-        title={`趋势衰竭近窗（trend_exhaustion · ${exh_recent.length}）`}
-        hint="近窗逐根衰竭值"
-        empty={exh_recent.length === 0}
+        title={`散户止损带（retail_stop · ${retail.length}）`}
+        hint="磁吸方向 = 主力扫货目标；距 POC < 0.3% 易被率先扫损"
+        empty={retail.length === 0}
       >
-        <div className="mt-2 max-h-56 space-y-1 overflow-auto pr-1">
-          {exh_recent.slice(0, 12).map((e, i) => (
-            <div key={i} className="flex items-baseline justify-between text-xs">
-              <span className="num">{fmt(e.exhaustion)}</span>
-              <span className="text-muted-foreground">
-                {fmt(e.type)} · {fmt(e.ts)}
+        <BandSplitView
+          above={retailSplit.above.map((b) => b.raw)}
+          below={retailSplit.below.map((b) => b.raw)}
+          renderRow={(b, i) => (
+            <BandRow
+              key={i}
+              price={Number(b.avg_price)}
+              distancePct={
+                typeof b.distance_pct === "number"
+                  ? (b.distance_pct as number)
+                  : distPct(b.avg_price, last_price)
+              }
+              side={String(b.side ?? "")}
+              extra={
+                <span className="text-[10px] text-muted-foreground">
+                  vol={fmtInt(b.volume)}
+                </span>
+              }
+            />
+          )}
+        />
+      </IndicatorCard>
+
+      {/* 爆仓热力 */}
+      <IndicatorCard
+        title={`爆仓热力（heatmap · ${heat.length}）`}
+        hint="清算预测密度；intensity ∈ [0,1]，越高越密"
+        empty={heat.length === 0}
+      >
+        <BandSplitView
+          above={heatSplit.above.map((b) => b.raw)}
+          below={heatSplit.below.map((b) => b.raw)}
+          renderRow={(b, i) => (
+            <div
+              key={i}
+              className="flex items-baseline justify-between gap-2 py-0.5 text-xs"
+            >
+              <span className="flex items-baseline gap-2">
+                <span className="num font-medium">{fmtPrice(b.price)}</span>
+                <span className="text-[11px] text-muted-foreground">
+                  {fmtDistance(distPct(b.price, last_price))}
+                </span>
+              </span>
+              <span className="flex items-baseline gap-2">
+                <IntensityDots
+                  count={Math.round(Number(b.intensity ?? 0) * 5)}
+                  max={5}
+                  tone="bad"
+                />
+                <span className="text-[11px] text-muted-foreground">
+                  <span
+                    className={cn(
+                      b.type === "Accumulation" && "text-emerald-400",
+                      b.type === "Distribution" && "text-rose-400",
+                    )}
+                  >
+                    {fmt(b.type)}
+                  </span>
+                </span>
               </span>
             </div>
-          ))}
-        </div>
+          )}
+        />
+      </IndicatorCard>
+
+      {/* 爆仓燃料 */}
+      <IndicatorCard
+        title={`爆仓燃料（liquidation_fuel · ${fuel.length}）`}
+        hint="累积清算能量（fuel）；与最大值横向对比"
+        empty={fuel.length === 0}
+      >
+        <BandSplitView
+          above={fuelSplit.above.map((b) => b.raw)}
+          below={fuelSplit.below.map((b) => b.raw)}
+          renderRow={(b, i) => {
+            const bot = Number(b.bottom);
+            const top = Number(b.top);
+            const center = (bot + top) / 2;
+            return (
+              <div key={i} className="py-0.5">
+                <div className="flex items-baseline justify-between text-xs">
+                  <span className="num">
+                    {fmtPrice(bot)} → {fmtPrice(top)}
+                    <span className="ml-2 text-[11px] text-muted-foreground">
+                      {fmtDistance(distPct(center, last_price))}
+                    </span>
+                  </span>
+                  <span className="flex items-baseline gap-1 text-[11px] text-muted-foreground">
+                    <Flame className="h-3 w-3 text-amber-400" />
+                    {fmtInt(b.fuel)}
+                  </span>
+                </div>
+                <ProgressBar
+                  value={Number(b.fuel) || 0}
+                  max={fuelMaxFuel || 1}
+                  tone="warn"
+                />
+              </div>
+            );
+          }}
+        />
+      </IndicatorCard>
+
+      {/* 真空带 */}
+      <IndicatorCard
+        title={`真空带（vacuums · ${vacs.length}）`}
+        hint="低成交量区间 → 价格穿越极快"
+        empty={vacs.length === 0}
+      >
+        <BandSplitView
+          above={vacSplit.above.map((b) => b.raw)}
+          below={vacSplit.below.map((b) => b.raw)}
+          renderRow={(b, i) => {
+            const lo = Number(b.low);
+            const hi = Number(b.high);
+            const center = (lo + hi) / 2;
+            return (
+              <BandRow
+                key={i}
+                rangeBottom={lo}
+                rangeTop={hi}
+                distancePct={distPct(center, last_price)}
+                extra={
+                  <span className="text-[10px] text-muted-foreground">
+                    宽 {fmtPctSafe((hi - lo) / lo)}
+                  </span>
+                }
+              />
+            );
+          }}
+        />
       </IndicatorCard>
     </div>
   );
 }
 
-// ── 主力族 ──
-function MainForceTab({ snap }: { snap: SnapAccess }) {
-  const sm_ongoing = snap.get<Record<string, unknown>>("smart_money_ongoing");
-  const sm_all = snap.list<Record<string, unknown>>("smart_money_all");
-  const reso_recent = snap.list<Record<string, unknown>>("resonance_recent");
+// ─────────────────────────────────────────────────────
+// Tab 4 · 结构事件族
+// ─────────────────────────────────────────────────────
+
+function StructureTab({ snap }: { snap: SnapAccess }) {
+  const last_price = snap.lastPrice;
+  const choch_latest = snap.get<Record<string, unknown>>("choch_latest");
+  const choch = snap.list<Record<string, unknown>>("choch_recent");
+  const sweep_last = snap.get<Record<string, unknown>>("sweep_last");
+  const sweep_count = snap.get<number>("sweep_count_recent") ?? 0;
+  const pi_recent = snap.list<Record<string, unknown>>("power_imbalance_recent");
+  const pi_streak = snap.get<number>("power_imbalance_streak") ?? 0;
+  const pi_side = snap.get<string>("power_imbalance_streak_side");
+  const exh_recent = snap.list<Record<string, unknown>>("trend_exhaustion_recent");
+  const exh_streak = snap.get<number>("exhaustion_streak") ?? 0;
+  const exh_type = snap.get<string>("exhaustion_streak_type");
+
+  const piMaxRatio = useMemo(
+    () =>
+      pi_recent.reduce(
+        (m, p) => Math.max(m, Math.abs(Number(p.ratio) || 0)),
+        0,
+      ),
+    [pi_recent],
+  );
+  const exhMaxVal = useMemo(
+    () =>
+      exh_recent.reduce(
+        (m, e) => Math.max(m, Number(e.exhaustion) || 0),
+        0,
+      ),
+    [exh_recent],
+  );
 
   return (
     <div className="grid gap-4 lg:grid-cols-2">
+      {/* CHoCH 最新 + 近期列表 */}
       <IndicatorCard
-        title="聪明钱成本（smart_money）"
-        hint="主力建仓段及成本均价"
-        empty={!sm_ongoing && sm_all.length === 0}
+        title="CHoCH 破位（最新）"
+        hint="机构破坏 (CHoCH) / 突破延续 (BOS)；bars_since 越小越新鲜"
+        empty={!choch_latest}
+        emptyText="本周期暂无 CHoCH 事件"
       >
-        {sm_ongoing && (
-          <div className="space-y-1.5">
+        {choch_latest && (
+          <>
             <div className="flex items-baseline justify-between text-xs">
-              <span className="text-muted-foreground">进行中段</span>
-              <span className="num font-medium">{fmt(sm_ongoing.type)}</span>
+              <span className="text-muted-foreground">事件类型</span>
+              <span
+                className={cn(
+                  "num font-medium",
+                  choch_latest.kind === "CHoCH" && "text-amber-400",
+                )}
+              >
+                {fmt(choch_latest.kind)}_{fmt(choch_latest.direction)}
+              </span>
             </div>
             <div className="flex items-baseline justify-between text-xs">
-              <span className="text-muted-foreground">建仓均价</span>
-              <span className="num">{fmtPrice(sm_ongoing.avg_price)}</span>
+              <span className="text-muted-foreground">触发价</span>
+              <span className="num">{fmtPrice(choch_latest.price)}</span>
             </div>
             <div className="flex items-baseline justify-between text-xs">
-              <span className="text-muted-foreground">起始 ts</span>
-              <span className="num">{fmt(sm_ongoing.start_ts)}</span>
+              <span className="text-muted-foreground">破坏的水平</span>
+              <span className="num">
+                {fmtPrice(choch_latest.level_price)}
+                <span className="ml-2 text-[11px] text-muted-foreground">
+                  {fmtDistance(Number(choch_latest.distance_pct))}
+                </span>
+              </span>
             </div>
-          </div>
+            <div className="flex items-baseline justify-between text-xs">
+              <span className="text-muted-foreground">距今</span>
+              <span
+                className={cn(
+                  "num",
+                  Number(choch_latest.bars_since) <= 6
+                    ? "text-amber-400 font-medium"
+                    : "text-muted-foreground",
+                )}
+              >
+                {fmt(choch_latest.bars_since)} 根
+              </span>
+            </div>
+            <div className="flex items-baseline justify-between text-xs">
+              <span className="text-muted-foreground">事件时间</span>
+              <span className="num text-[11px] text-muted-foreground">
+                {fmtTime(choch_latest.ts)}
+              </span>
+            </div>
+          </>
         )}
-        {sm_all.length > 0 && (
+        {choch.length > 1 && (
           <div className="mt-3 border-t border-border/30 pt-2">
             <div className="text-[11px] text-muted-foreground">
-              历史段（共 {sm_all.length}）
+              最近 {Math.min(choch.length - 1, 6)} 条历史：
             </div>
             <div className="mt-1 max-h-40 space-y-0.5 overflow-auto pr-1">
-              {sm_all.slice(0, 8).map((s, i) => (
+              {choch.slice(1, 7).map((c, i) => (
                 <div
                   key={i}
                   className="flex items-baseline justify-between text-xs"
                 >
-                  <span className="num">{fmtPrice(s.avg_price)}</span>
-                  <span className="text-muted-foreground">{fmt(s.type)}</span>
+                  <span className="num">{fmtPrice(c.level_price)}</span>
+                  <span className="text-[11px] text-muted-foreground">
+                    {fmt(c.kind)}_{fmt(c.direction)} · {fmt(c.bars_since)} 根前
+                  </span>
                 </div>
               ))}
             </div>
@@ -748,84 +1547,436 @@ function MainForceTab({ snap }: { snap: SnapAccess }) {
         )}
       </IndicatorCard>
 
+      {/* 流动性扫荡 */}
       <IndicatorCard
-        title={`跨所共振（resonance · 近 ${reso_recent.length}）`}
-        hint="多平台同向异常"
-        rows={[
-          {
-            label: "近窗总次数",
-            value: fmt(snap.get("resonance_count_recent")),
-          },
-          {
-            label: "买/卖",
-            value: `${fmt(snap.get("resonance_buy_count"))} / ${fmt(snap.get("resonance_sell_count"))}`,
-          },
-          {
-            label: "巨鲸净方向",
-            value: fmt(snap.get("whale_net_direction")),
-            tone:
-              snap.get<string>("whale_net_direction") === "buy"
-                ? "good"
-                : snap.get<string>("whale_net_direction") === "sell"
-                  ? "bad"
-                  : "neutral",
-          },
-        ]}
+        title="流动性扫荡（liquidity_sweep）"
+        hint="近窗扫损次数 + 最新事件方向"
       >
-        {reso_recent.length > 0 && (
-          <div className="mt-3 max-h-40 space-y-0.5 overflow-auto pr-1">
-            {reso_recent.slice(0, 8).map((r, i) => (
-              <div
-                key={i}
-                className="flex items-baseline justify-between text-xs"
+        <div className="flex items-baseline justify-between text-xs">
+          <span className="text-muted-foreground">近窗次数</span>
+          <span
+            className={cn(
+              "num font-medium",
+              sweep_count >= 3 && "text-amber-400",
+            )}
+          >
+            {fmtInt(sweep_count)}
+          </span>
+        </div>
+        <ProgressBar
+          value={Math.min(sweep_count, 10)}
+          max={10}
+          tone={sweep_count >= 3 ? "warn" : "primary"}
+          className="mb-2"
+        />
+        {sweep_last ? (
+          <>
+            <div className="flex items-baseline justify-between text-xs">
+              <span className="text-muted-foreground">最新方向</span>
+              <span
+                className={cn(
+                  "num font-medium",
+                  sweep_last.type === "bullish_sweep" && "text-emerald-400",
+                  sweep_last.type === "bearish_sweep" && "text-rose-400",
+                )}
               >
-                <span className="num">{fmt(r.side)}</span>
-                <span className="text-muted-foreground">
-                  strength={fmt(r.strength)} · ts={fmt(r.ts)}
+                {fmt(sweep_last.type)}
+              </span>
+            </div>
+            <div className="flex items-baseline justify-between text-xs">
+              <span className="text-muted-foreground">价位</span>
+              <span className="num">
+                {fmtPrice(sweep_last.price)}
+                <span className="ml-2 text-[11px] text-muted-foreground">
+                  {fmtDistance(distPct(sweep_last.price, last_price))}
                 </span>
+              </span>
+            </div>
+            <div className="flex items-baseline justify-between text-xs">
+              <span className="text-muted-foreground">成交量</span>
+              <span className="num">{fmtInt(sweep_last.volume)}</span>
+            </div>
+            <div className="flex items-baseline justify-between text-xs">
+              <span className="text-muted-foreground">时间</span>
+              <span className="num text-[11px] text-muted-foreground">
+                {fmtTime(sweep_last.ts)}
+              </span>
+            </div>
+          </>
+        ) : (
+          <div className="text-xs text-muted-foreground">无最新扫荡事件</div>
+        )}
+      </IndicatorCard>
+
+      {/* 能量失衡 */}
+      <IndicatorCard
+        title={`能量失衡（power_imbalance · 近 ${pi_recent.length}）`}
+        hint="官方：连续 ≥3 根同向 → 行情发动"
+      >
+        <div className="flex items-baseline justify-between text-xs">
+          <span className="text-muted-foreground">Streak</span>
+          <span
+            className={cn(
+              "num font-medium",
+              pi_streak >= 3 && "text-rose-400",
+            )}
+          >
+            {fmtInt(pi_streak)} 根 ·{" "}
+            <span
+              className={cn(
+                pi_side === "buy" && "text-emerald-400",
+                pi_side === "sell" && "text-rose-400",
+              )}
+            >
+              {fmt(pi_side)}
+            </span>
+          </span>
+        </div>
+        <ProgressBar
+          value={Math.min(pi_streak, 5)}
+          max={5}
+          tone={pi_streak >= 3 ? "bad" : "warn"}
+          className="mb-2"
+        />
+        {pi_recent.length > 0 ? (
+          <div className="mt-2 max-h-56 space-y-1 overflow-auto border-t border-border/30 pt-2 pr-1">
+            {pi_recent.slice(0, 12).map((p, i) => {
+              const r = Number(p.ratio) || 0;
+              return (
+                <div key={i}>
+                  <div className="flex items-baseline justify-between text-xs">
+                    <span className="num">{r.toFixed(3)}</span>
+                    <span className="text-[11px] text-muted-foreground">
+                      买 {fmtInt(p.buy_vol)} / 卖 {fmtInt(p.sell_vol)}
+                      {" · "}
+                      {fmtTime(p.ts)}
+                    </span>
+                  </div>
+                  <ProgressBar
+                    value={Math.abs(r)}
+                    max={piMaxRatio || 1}
+                    tone={r >= 0 ? "good" : "bad"}
+                  />
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="text-xs text-muted-foreground">无近窗事件</div>
+        )}
+      </IndicatorCard>
+
+      {/* 趋势衰竭近窗 */}
+      <IndicatorCard
+        title={`趋势衰竭近窗（trend_exhaustion · ${exh_recent.length}）`}
+        hint="逐根衰竭值序列；连续 ≥3 根 → 衰竭警报"
+      >
+        <div className="flex items-baseline justify-between text-xs">
+          <span className="text-muted-foreground">Streak</span>
+          <span
+            className={cn(
+              "num font-medium",
+              exh_streak >= 3 && "text-rose-400",
+            )}
+          >
+            {fmtInt(exh_streak)} 根 ·{" "}
+            <span
+              className={cn(
+                exh_type === "Accumulation" && "text-emerald-400",
+                exh_type === "Distribution" && "text-rose-400",
+              )}
+            >
+              {fmt(exh_type)}
+            </span>
+          </span>
+        </div>
+        {exh_recent.length > 0 ? (
+          <div className="mt-2 max-h-56 space-y-1 overflow-auto border-t border-border/30 pt-2 pr-1">
+            {exh_recent.slice(0, 12).map((e, i) => (
+              <div key={i}>
+                <div className="flex items-baseline justify-between text-xs">
+                  <span className="num">{fmt(e.exhaustion)}</span>
+                  <span className="text-[11px] text-muted-foreground">
+                    <span
+                      className={cn(
+                        e.type === "Accumulation" && "text-emerald-400",
+                        e.type === "Distribution" && "text-rose-400",
+                      )}
+                    >
+                      {fmt(e.type)}
+                    </span>
+                    {" · "}
+                    {fmtTime(e.ts)}
+                  </span>
+                </div>
+                <ProgressBar
+                  value={Number(e.exhaustion) || 0}
+                  max={exhMaxVal || 1}
+                  tone={e.type === "Accumulation" ? "good" : "bad"}
+                />
               </div>
             ))}
+          </div>
+        ) : (
+          <div className="text-xs text-muted-foreground">无近窗衰竭事件</div>
+        )}
+      </IndicatorCard>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────
+// Tab 5 · 主力族
+// ─────────────────────────────────────────────────────
+
+function MainForceTab({ snap }: { snap: SnapAccess }) {
+  const last_price = snap.lastPrice;
+  const sm_ongoing = snap.get<Record<string, unknown>>("smart_money_ongoing");
+  const sm_all = snap.list<Record<string, unknown>>("smart_money_all");
+  const reso_recent = snap.list<Record<string, unknown>>("resonance_recent");
+  const reso_buy = snap.get<number>("resonance_buy_count") ?? 0;
+  const reso_sell = snap.get<number>("resonance_sell_count") ?? 0;
+  const whale = snap.get<string>("whale_net_direction");
+  const heat = snap.get<Record<string, unknown>>("time_heatmap_view");
+
+  const peakHours = (heat?.peak_hours as number[] | undefined) ?? [];
+  const deadHours = (heat?.dead_hours as number[] | undefined) ?? [];
+  const currentHour = Number(heat?.current_hour ?? -1);
+  const currentRank = Number(heat?.current_rank ?? 0);
+
+  return (
+    <div className="grid gap-4 lg:grid-cols-2">
+      {/* 聪明钱成本 */}
+      <IndicatorCard
+        title="聪明钱成本（smart_money）"
+        hint="主力建仓段及成本均价；ongoing = 进行中段"
+        empty={!sm_ongoing && sm_all.length === 0}
+      >
+        {sm_ongoing && (
+          <div className="rounded-md border border-primary/30 bg-primary/5 p-2">
+            <div className="text-[11px] uppercase tracking-wider text-primary/80">
+              进行中段
+            </div>
+            <div className="mt-1 flex items-baseline justify-between text-xs">
+              <span className="text-muted-foreground">类型</span>
+              <span
+                className={cn(
+                  "num font-medium",
+                  sm_ongoing.type === "Accumulation"
+                    ? "text-emerald-400"
+                    : "text-rose-400",
+                )}
+              >
+                {fmt(sm_ongoing.type)}
+              </span>
+            </div>
+            <div className="flex items-baseline justify-between text-xs">
+              <span className="text-muted-foreground">建仓均价</span>
+              <span className="num font-medium">
+                {fmtPrice(sm_ongoing.avg_price)}
+                <span className="ml-2 text-[11px] text-muted-foreground">
+                  {fmtDistance(distPct(sm_ongoing.avg_price, last_price))}
+                </span>
+              </span>
+            </div>
+            <div className="flex items-baseline justify-between text-xs">
+              <span className="text-muted-foreground">起始</span>
+              <span className="num text-[11px] text-muted-foreground">
+                {fmtTime(sm_ongoing.start_time)}
+              </span>
+            </div>
+          </div>
+        )}
+        {sm_all.length > 0 && (
+          <div className="mt-3 border-t border-border/30 pt-2">
+            <div className="text-[11px] text-muted-foreground">
+              历史段（共 {sm_all.length}，按时间倒序前 8 条）
+            </div>
+            <div className="mt-1 max-h-40 space-y-0.5 overflow-auto pr-1">
+              {sm_all.slice(0, 8).map((s, i) => (
+                <div
+                  key={i}
+                  className="flex items-baseline justify-between text-xs"
+                >
+                  <span className="num">
+                    {fmtPrice(s.avg_price)}
+                    <span className="ml-2 text-[11px] text-muted-foreground">
+                      {fmtDistance(distPct(s.avg_price, last_price))}
+                    </span>
+                  </span>
+                  <span className="text-[11px] text-muted-foreground">
+                    <span
+                      className={cn(
+                        s.type === "Accumulation" && "text-emerald-400",
+                        s.type === "Distribution" && "text-rose-400",
+                      )}
+                    >
+                      {fmt(s.type)}
+                    </span>
+                    {" · "}
+                    {fmtTime(s.start_time)}
+                  </span>
+                </div>
+              ))}
+            </div>
           </div>
         )}
       </IndicatorCard>
 
+      {/* 跨所共振 + 巨鲸方向 */}
       <IndicatorCard
-        title="时间热力图（time_heatmap）"
-        hint="24h 活跃度 + 当前小时"
-        empty={!snap.get("time_heatmap_view")}
-        className="lg:col-span-2"
+        title={`跨所共振（resonance · 近 ${reso_recent.length}）`}
+        hint="多平台同向异常大单 + 巨鲸净方向"
       >
-        {Boolean(snap.get("time_heatmap_view")) && (
-          <div className="space-y-1.5">
-            <div className="flex items-baseline justify-between text-xs">
-              <span className="text-muted-foreground">当前小时活跃度</span>
-              <span className="num font-medium">
-                {fmtPctSafe(snap.get("current_hour_activity"))}
-              </span>
+        <div className="flex items-baseline justify-between text-xs">
+          <span className="text-muted-foreground">巨鲸净方向</span>
+          <span
+            className={cn(
+              "num font-medium",
+              whale === "buy" && "text-emerald-400",
+              whale === "sell" && "text-rose-400",
+            )}
+          >
+            {fmt(whale)}
+          </span>
+        </div>
+        <div className="mt-2 grid grid-cols-2 gap-2">
+          <div>
+            <div className="flex items-baseline justify-between text-[11px]">
+              <span className="text-emerald-400/80">买盘共振</span>
+              <span className="num">{fmtInt(reso_buy)}</span>
             </div>
-            <div className="flex items-baseline justify-between text-xs">
-              <span className="text-muted-foreground">是否活跃时段</span>
-              <span className="num">
-                {snap.get<boolean>("active_session") ? "✓ 是" : "✗ 否"}
-              </span>
+            <ProgressBar
+              value={reso_buy}
+              max={Math.max(reso_buy + reso_sell, 1)}
+              tone="good"
+            />
+          </div>
+          <div>
+            <div className="flex items-baseline justify-between text-[11px]">
+              <span className="text-rose-400/80">卖盘共振</span>
+              <span className="num">{fmtInt(reso_sell)}</span>
             </div>
-            <div className="mt-2">
-              <div className="text-[11px] text-muted-foreground">
-                Peak 小时：
-                {fmt(
-                  (snap.get<Record<string, unknown>>("time_heatmap_view")
-                    ?.peak_hours as number[] | undefined)?.join(", "),
-                )}
-              </div>
-              <div className="text-[11px] text-muted-foreground">
-                Dead 小时：
-                {fmt(
-                  (snap.get<Record<string, unknown>>("time_heatmap_view")
-                    ?.dead_hours as number[] | undefined)?.join(", "),
-                )}
-              </div>
+            <ProgressBar
+              value={reso_sell}
+              max={Math.max(reso_buy + reso_sell, 1)}
+              tone="bad"
+            />
+          </div>
+        </div>
+        {reso_recent.length > 0 && (
+          <div className="mt-3 border-t border-border/30 pt-2">
+            <div className="text-[11px] text-muted-foreground">
+              最近 {Math.min(reso_recent.length, 6)} 条：
+            </div>
+            <div className="mt-1 max-h-40 space-y-0.5 overflow-auto pr-1">
+              {reso_recent.slice(0, 6).map((r, i) => (
+                <div
+                  key={i}
+                  className="flex items-baseline justify-between text-xs"
+                >
+                  <span className="num">
+                    {fmtPrice(r.price)}
+                    <span className="ml-2 text-[11px] text-muted-foreground">
+                      {fmtDistance(distPct(r.price, last_price))}
+                    </span>
+                  </span>
+                  <span className="text-[11px] text-muted-foreground">
+                    <span
+                      className={cn(
+                        r.direction === "buy" && "text-emerald-400",
+                        r.direction === "sell" && "text-rose-400",
+                      )}
+                    >
+                      {fmt(r.direction)}
+                    </span>
+                    {" · ×"}
+                    {fmt(r.count)}
+                    {" · "}
+                    {fmtTime(r.ts)}
+                  </span>
+                </div>
+              ))}
             </div>
           </div>
+        )}
+      </IndicatorCard>
+
+      {/* 时间热力图 24h */}
+      <IndicatorCard
+        title="时间热力图（time_heatmap · 24h）"
+        hint="UTC 24 小时活跃度；rank 越小越活跃，1 = 当日最活跃"
+        empty={!heat}
+        className="lg:col-span-2"
+      >
+        {heat && (
+          <>
+            <div className="flex items-baseline justify-between text-xs">
+              <span className="text-muted-foreground">当前小时（UTC）</span>
+              <span
+                className={cn(
+                  "num font-medium",
+                  heat.is_active_session ? "text-emerald-400" : "text-amber-400",
+                )}
+              >
+                {currentHour >= 0 ? `${currentHour}:00` : "—"}
+                {" · "}
+                rank #{currentRank}
+                {" · "}
+                {heat.is_active_session ? "活跃" : "垃圾时段"}
+              </span>
+            </div>
+            <div className="flex items-baseline justify-between text-xs">
+              <span className="text-muted-foreground">当前活跃度</span>
+              <span className="num">
+                {fmtPctSafe(heat.current_activity)}
+              </span>
+            </div>
+            <ProgressBar
+              value={Number(heat.current_activity ?? 0)}
+              max={1}
+              tone={heat.is_active_session ? "good" : "warn"}
+              className="mb-3"
+            />
+
+            {/* 24 小时迷你热力 */}
+            <div className="text-[11px] text-muted-foreground">24h 分布：</div>
+            <div className="mt-1 grid grid-cols-12 gap-0.5">
+              {Array.from({ length: 24 }).map((_, h) => {
+                const isPeak = peakHours.includes(h);
+                const isDead = deadHours.includes(h);
+                const isCurrent = h === currentHour;
+                return (
+                  <div
+                    key={h}
+                    className={cn(
+                      "flex h-6 items-center justify-center rounded-sm text-[9px]",
+                      isPeak && "bg-emerald-500/30 text-emerald-200",
+                      isDead && "bg-rose-500/20 text-rose-300",
+                      !isPeak && !isDead && "bg-secondary/30 text-muted-foreground",
+                      isCurrent && "ring-1 ring-primary",
+                    )}
+                  >
+                    {h}
+                  </div>
+                );
+              })}
+            </div>
+            <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px] text-muted-foreground">
+              <span>
+                Peak：
+                <span className="text-emerald-400">
+                  {peakHours.length > 0 ? peakHours.join(", ") : "—"}
+                </span>
+              </span>
+              <span>
+                Dead：
+                <span className="text-rose-400">
+                  {deadHours.length > 0 ? deadHours.join(", ") : "—"}
+                </span>
+              </span>
+            </div>
+          </>
         )}
       </IndicatorCard>
     </div>
@@ -874,7 +2025,12 @@ export default function IndicatorsPage() {
             </span>
             {anchor_ts && (
               <span className="text-xs text-muted-foreground">
-                · 锚点 {new Date(anchor_ts).toLocaleString()}
+                · 锚点 {fmtTime(anchor_ts)}
+              </span>
+            )}
+            {query.dataUpdatedAt > 0 && (
+              <span className="text-xs text-muted-foreground">
+                · 已刷新 {new Date(query.dataUpdatedAt).toLocaleTimeString()}
               </span>
             )}
           </div>
@@ -959,11 +2115,9 @@ export default function IndicatorsPage() {
       )}
 
       {/* 底部小提示 */}
-      <div className="text-center text-[11px] text-muted-foreground">
-        指标全景每 30s 自动刷新一次。
-        <span className="opacity-60">
-          所有数据来自 backend · FeatureSnapshot.{`{trend|value|liquidity|...}`}
-        </span>
+      <div className="panel-glass rounded-lg p-3 text-center text-[11px] text-muted-foreground">
+        指标全景每 30s 自动刷新一次；切换 symbol/tf 时数据立即跟随。所有数据来自
+        backend · FeatureSnapshot.{"{trend|value|liquidity|...}"}。
       </div>
     </div>
   );

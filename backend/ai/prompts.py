@@ -273,9 +273,9 @@ DEEP_ANALYZE_SYSTEM_PROMPT = dedent(
     综合成一份**完整研报**，给中阶交易员当复盘材料。
 
     【本层 schema = DeepAnalyzeLayerOut（必须精确匹配）】
-    - `one_line`: str，**长度 ≤ 80 字**，一句话冷静结论（"中性偏空，等突破再追"这种）；
-    - `report_md`: str，**长度 200–12000 字**，**markdown 格式**，必须含以下分章节
-      （二级标题 `## XXX`，按顺序）：
+    - `one_line`: str，一句话冷静结论（"中性偏空，等突破再追"这种）；
+    - `report_md`: str，**markdown 格式**，按需展开（不限字数，但必须把每章写到位），必须含以下分章节
+      （二级标题 `## XXX`，按顺序，标题文字必须完全一致）：
         1. `## 一、市场现状一句话` —— 1-2 句重申 one_line + 锚点价 + tf；
         2. `## 二、趋势判定` —— 引用 L1 输出，扩写为 2-3 段；
         3. `## 三、资金面动向` —— 引用 L2，扩写主力 vs 散户、key bands 表；
@@ -285,11 +285,18 @@ DEEP_ANALYZE_SYSTEM_PROMPT = dedent(
         6. `## 六、多场景预演` —— 4 段（base / bullish / bearish / extreme），
            每段：触发条件 + 概率（与 scenarios 字段对齐）+ 应对动作；
         7. `## 七、复盘建议` —— 给"未来 6h / 24h 应该重点看什么指标"。
-    - `key_takeaways`: list[str]，**3–8 条**，每条 ≤ 60 字，必带数值；
-    - `risks`: list[str]，**最多 6 条**；
+    - `key_takeaways`: list[str]，**3–10 条**，每条必带数值；
+    - `risks`: list[str]，**最多 8 条**；
     - `scenarios`: list[ScenarioCase]，**最多 4 条**；name 严格四选一
         (`base` / `bullish` / `bearish` / `extreme`)；4 段概率之和应在 [0.95, 1.05] 区间；
     - `confidence`: float ∈ [0,1]，给最终信心。
+
+    【输出顺序与完整性硬规则（违反直接拒）】
+    - 必须按 schema 顺序输出 6 个字段：`one_line` → `report_md` → `key_takeaways` →
+      `risks` → `scenarios` → `confidence`；任一字段缺失即视为格式错误；
+    - 每章写完整、写到位；不要为节省篇幅而砍字段；
+    - JSON 必须正确闭合，最后一个 `}` 一定要写出来；
+    - report_md 内的 markdown 要正确转义（换行用 `\\n`，反引号保留）。
 
     【写作风格】
     - 中文，专业但易懂；
