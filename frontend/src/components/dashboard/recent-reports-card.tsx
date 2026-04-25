@@ -58,7 +58,7 @@ function ReportLine({ item }: { item: AIReportsListItem }) {
             isErr ? "text-destructive/90" : "text-foreground/85",
           )}
         >
-          {item.one_line || (isErr ? "深度分析失败，点击查看 raw_payloads" : "（无摘要）")}
+          {item.one_line || (isErr ? "AI 综合分析失败，点击查看 raw_payloads" : "（无摘要）")}
         </div>
         <div className="mt-0.5 text-[10px] text-muted-foreground/70 truncate">
           {item.symbol} · {item.tf} · {item.model_tier} ·{" "}

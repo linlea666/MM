@@ -259,41 +259,50 @@ class SummaryBandPreview(_Strict):
 
 
 # ════════════════════════════════════════════════════════════════════
-# Layer 4 · DeepAnalyzer（深度分析综合层）
+# OnePass · 单次综合分析（V1.2 · 替代旧的 4 层 DeepAnalyzer）
 # ════════════════════════════════════════════════════════════════════
 
 
-class ScenarioCase(_Strict):
-    """多场景预演单例。"""
+class OnePassReport(_Strict):
+    """OnePass · 单次综合分析输出。
 
-    name: Literal["base", "bullish", "bearish", "extreme"]
-    probability: float = Field(ge=0.0, le=1.0)
-    narrative: str = Field(max_length=800)
-    trigger: str = Field(max_length=400, description="触发条件白话")
-    actionable: str = Field(max_length=500, description="若该剧本兑现应如何应对")
-
-
-class DeepAnalyzeLayerOut(_Strict):
-    """Layer 4 · 深度分析输出。
-
-    把 L1/L2/L3 + 原始 input 全部喂回去，产出可以直接打印的"完整研报"。
-
-    schema 字段长度上限取宽：``report_md`` 给到 32k 字符（≈ 16k tokens），
-    远超 DeepSeek V4 单次输出硬上限 8192 tokens —— 即便模型把上限吃满，
-    也不会在 schema 校验侧被拒，避免"字段长度限制 + max_tokens 双重夹击"
-    导致的隐性截断。
+    设计取舍：
+    - **schema 极简**：只保留 hero/索引必需的结构化字段，其它全交给 ``report_md``，
+      让模型尽量"按它的语言/逻辑"组织内容，而不是被 schema 强行肢解；
+    - **markdown 优先**：``report_md`` 是主体，章节和结构由 prompt **建议**而非
+      schema 强制 —— 避免老 DeepAnalyzer "7 章 + 4 ScenarioCase + JSON 闭合"
+      的复杂稳态在 finish_reason="stop" 处早停；
+    - **长度上限放到 60k**：远超 DeepSeek V4 单次输出硬上限（约 8k tokens），
+      不会成为截断瓶颈；模型按需展开。
     """
 
-    one_line: str = Field(max_length=160, description="一句话总结，给 hero / 列表")
-    report_md: str = Field(
-        min_length=200,
-        max_length=32000,
-        description="完整 markdown 报告，含分章节：判定 / 资金面 / 计划 / 风险 / 复盘",
+    one_line: str = Field(max_length=240, description="一句话冷静结论（hero / 列表展示）")
+    overall_bias: Literal["bullish", "bearish", "neutral"] = Field(
+        description="综合方向判断"
     )
-    key_takeaways: list[str] = Field(min_length=3, max_length=12)
-    risks: list[str] = Field(default_factory=list, max_length=10)
-    scenarios: list[ScenarioCase] = Field(default_factory=list, max_length=4)
     confidence: float = Field(ge=0.0, le=1.0)
+
+    key_takeaways: list[str] = Field(
+        default_factory=list,
+        max_length=12,
+        description="3-12 条要点，每条独立可读，必带数值",
+    )
+    key_risks: list[str] = Field(
+        default_factory=list,
+        max_length=10,
+        description="风险点，每条带触发条件",
+    )
+    next_focus: list[str] = Field(
+        default_factory=list,
+        max_length=8,
+        description="未来 6h / 24h 应该重点观察的指标 / 价位",
+    )
+
+    report_md: str = Field(
+        min_length=100,
+        max_length=60000,
+        description="综合 markdown 研报；章节由 prompt 建议但不强制",
+    )
 
 
 # ════════════════════════════════════════════════════════════════════

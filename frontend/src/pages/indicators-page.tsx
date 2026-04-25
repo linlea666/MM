@@ -1984,6 +1984,507 @@ function MainForceTab({ snap }: { snap: SnapAccess }) {
 }
 
 // ─────────────────────────────────────────────────────
+// 白话总结派生（纯前端，不调 LLM）
+// ─────────────────────────────────────────────────────
+
+type BriefingTone = "good" | "bad" | "warn" | "neutral";
+
+interface Briefing {
+  tone: BriefingTone;
+  headline: string;
+  lines: string[];   // 每条独立要点
+}
+
+/** 把数字百分比 (0.0212 → "+2.12%") 直观化 */
+const pctText = (v: number | undefined | null, withSign = true): string => {
+  if (typeof v !== "number" || !Number.isFinite(v)) return "—";
+  const sign = withSign && v > 0 ? "+" : "";
+  return `${sign}${(v * 100).toFixed(2)}%`;
+};
+
+/** 整体市场白话总结。融合 5 类核心信号，挑出最有意义的 4-5 句。 */
+function marketBriefing(snap: SnapAccess): Briefing {
+  const lp = snap.lastPrice;
+  const purity = snap.get<Record<string, unknown>>("trend_purity_last");
+  const sat = snap.get<Record<string, unknown>>("trend_saturation");
+  const cvdSign = snap.get<string>("cvd_slope_sign");
+  const fvDelta = snap.get<number>("fair_value_delta_pct");
+  const exhStreak = snap.get<number>("exhaustion_streak") ?? 0;
+  const choch = snap.get<Record<string, unknown>>("choch_latest");
+  const ns = snap.get<number>("nearest_support_price");
+  const nsDist = snap.get<number>("nearest_support_distance_pct");
+  const nr = snap.get<number>("nearest_resistance_price");
+  const nrDist = snap.get<number>("nearest_resistance_distance_pct");
+  const whale = snap.get<string>("whale_net_direction");
+  const heat = snap.get<Record<string, unknown>>("time_heatmap_view");
+  const smart = snap.get<Record<string, unknown>>("smart_money_ongoing");
+
+  // 综合方向倾向（粗糙启发式）
+  let bullishVote = 0;
+  let bearishVote = 0;
+  if (purity?.type === "Accumulation") bullishVote += 1;
+  if (purity?.type === "Distribution") bearishVote += 1;
+  if (cvdSign === "up") bullishVote += 1;
+  if (cvdSign === "down") bearishVote += 1;
+  if (typeof fvDelta === "number") {
+    if (fvDelta > 0.005) bullishVote += 1;
+    else if (fvDelta < -0.005) bearishVote += 1;
+  }
+  if (whale === "buy") bullishVote += 1;
+  if (whale === "sell") bearishVote += 1;
+  const direction =
+    bullishVote > bearishVote + 1
+      ? "偏多"
+      : bearishVote > bullishVote + 1
+        ? "偏空"
+        : "中性";
+  const tone: BriefingTone =
+    direction === "偏多" ? "good" : direction === "偏空" ? "bad" : "warn";
+
+  const lines: string[] = [];
+
+  // 1. 趋势画像
+  if (purity || sat) {
+    const purityVal =
+      typeof purity?.purity === "number" ? (purity.purity as number) : null;
+    const satProg =
+      typeof sat?.progress === "number" ? (sat.progress as number) : null;
+    const stage =
+      purity?.type === "Accumulation"
+        ? "吸筹/上行段"
+        : purity?.type === "Distribution"
+          ? "派发/下行段"
+          : "无明显段";
+    const satWord =
+      satProg === null ? "" : satProg >= 0.9 ? "已饱和" : satProg >= 0.85 ? "接近饱和" : "饱和度健康";
+    lines.push(
+      `当前阶段：${stage}${
+        purityVal !== null ? `（纯度 ${purityVal.toFixed(0)}/100）` : ""
+      }${satProg !== null ? `，饱和度 ${(satProg * 100).toFixed(1)}% ${satWord}` : ""}。`,
+    );
+  }
+
+  // 2. 价位 vs VWAP
+  if (typeof fvDelta === "number" && Number.isFinite(fvDelta)) {
+    const direction2 = fvDelta > 0 ? "高于" : "低于";
+    lines.push(
+      `价格 ${direction2} VWAP 公允价 ${pctText(fvDelta)}${
+        Math.abs(fvDelta) > 0.02 ? "（乖离偏大）" : ""
+      }；CVD 方向 ${cvdSign ?? "—"}。`,
+    );
+  }
+
+  // 3. 关键位
+  const supportLine =
+    typeof ns === "number" && typeof nsDist === "number"
+      ? `下方支撑 \`${formatPrice(ns)}\`（${pctText(nsDist)}）`
+      : null;
+  const resistLine =
+    typeof nr === "number" && typeof nrDist === "number"
+      ? `上方阻力 \`${formatPrice(nr)}\`（${pctText(nrDist)}）`
+      : null;
+  if (supportLine || resistLine) {
+    lines.push(
+      `${[resistLine, supportLine].filter(Boolean).join("，")}${
+        lp ? `；当前价 \`${formatPrice(lp)}\`` : ""
+      }。`,
+    );
+  }
+
+  // 4. CHoCH 警报
+  if (choch) {
+    const dir =
+      choch.direction === "bullish" ? "向上" : choch.direction === "bearish" ? "向下" : "—";
+    const bs = typeof choch.bars_since === "number" ? `${choch.bars_since} 根前` : "近期";
+    lines.push(
+      `${bs}发生 ${choch.kind ?? "CHoCH/BOS"} ${dir}破位，触发价 \`${formatPrice(choch.price as number)}\`。`,
+    );
+  }
+
+  // 5. 衰竭警报
+  if (exhStreak >= 3) {
+    lines.push(
+      `**趋势衰竭警报**：连续 ${exhStreak} 根（${
+        snap.get<string>("exhaustion_streak_type") ?? "—"
+      }），动能耗尽。`,
+    );
+  }
+
+  // 6. 主力 / 时间
+  const sessionFlag = heat?.is_active_session;
+  const sessionStr =
+    sessionFlag === true ? "活跃时段" : sessionFlag === false ? "**垃圾时段**" : "";
+  const smartType = smart?.type;
+  if (smartType || whale || sessionStr) {
+    const parts: string[] = [];
+    if (smartType)
+      parts.push(`聪明钱进行中段：${smartType === "Accumulation" ? "吸筹" : "派发"}`);
+    if (whale && whale !== "neutral")
+      parts.push(`巨鲸方向 ${whale === "buy" ? "买" : "卖"}`);
+    if (sessionStr) parts.push(sessionStr);
+    if (parts.length > 0) lines.push(`${parts.join("，")}。`);
+  }
+
+  return {
+    tone,
+    headline: `综合判断：${direction}`,
+    lines,
+  };
+}
+
+function trendBriefing(snap: SnapAccess): Briefing {
+  const purity = snap.get<Record<string, unknown>>("trend_purity_last");
+  const sat = snap.get<Record<string, unknown>>("trend_saturation");
+  const cvdSign = snap.get<string>("cvd_slope_sign");
+  const cvdConv = snap.get<number>("cvd_converge_ratio");
+  const fvDelta = snap.get<number>("fair_value_delta_pct");
+  const pocTrend = snap.get<string>("poc_shift_trend");
+  const exhStreak = snap.get<number>("exhaustion_streak") ?? 0;
+
+  const lines: string[] = [];
+  if (purity) {
+    const stage =
+      purity.type === "Accumulation"
+        ? "吸筹/多头主导"
+        : purity.type === "Distribution"
+          ? "派发/空头主导"
+          : "—";
+    lines.push(
+      `**段类型**：${stage}（纯度 ${
+        typeof purity.purity === "number" ? (purity.purity as number).toFixed(0) : "—"
+      }/100）。`,
+    );
+  }
+  if (sat) {
+    const prog = Number(sat.progress ?? 0);
+    const word = prog >= 0.9 ? "已饱和（信号降级）" : prog >= 0.85 ? "接近饱和" : "健康";
+    lines.push(`**饱和度**：${(prog * 100).toFixed(1)}% — ${word}。`);
+  }
+  if (typeof fvDelta === "number") {
+    lines.push(
+      `**VWAP 乖离**：${pctText(fvDelta)} — 价${fvDelta > 0 ? "高于" : "低于"}公允价${
+        Math.abs(fvDelta) > 0.02 ? "（偏大）" : ""
+      }。`,
+    );
+  }
+  const cvdWord =
+    typeof cvdConv === "number"
+      ? cvdConv < 0.05
+        ? "极度收敛（多空对冲）"
+        : cvdConv < 0.3
+          ? "弱方向"
+          : "明确方向"
+      : "—";
+  lines.push(`**CVD 方向**：${cvdSign ?? "—"}（收敛比 ${pctText(cvdConv)} · ${cvdWord}）。`);
+  if (pocTrend) lines.push(`**POC 漂移方向**：${pocTrend}。`);
+  if (exhStreak >= 3) {
+    lines.push(`**衰竭警报**：连续 ${exhStreak} 根 — 动能耗尽。`);
+  }
+
+  const tone: BriefingTone =
+    purity?.type === "Accumulation" && cvdSign === "up"
+      ? "good"
+      : purity?.type === "Distribution" && cvdSign === "down"
+        ? "bad"
+        : exhStreak >= 3
+          ? "warn"
+          : "neutral";
+  return {
+    tone,
+    headline: "趋势画像",
+    lines,
+  };
+}
+
+function valueBriefing(snap: SnapAccess): Briefing {
+  const vp = snap.get<Record<string, unknown>>("volume_profile");
+  const hvn = snap.list("hvn_nodes");
+  const ob = snap.list("order_blocks");
+  const az = snap.list("absolute_zones");
+  const ns = snap.get<number>("nearest_support_price");
+  const nsDist = snap.get<number>("nearest_support_distance_pct");
+  const nr = snap.get<number>("nearest_resistance_price");
+  const nrDist = snap.get<number>("nearest_resistance_distance_pct");
+
+  const lines: string[] = [];
+  if (vp) {
+    const pos =
+      vp.last_price_position === "in_va"
+        ? "**Value Area 内**（公允区间，关注突破）"
+        : vp.last_price_position === "above_va"
+          ? "**Value Area 上方**（高位，警惕回归）"
+          : "**Value Area 下方**（低位，关注反弹）";
+    lines.push(`价位位置：${pos}。`);
+    if (typeof vp.poc_distance_pct === "number") {
+      lines.push(
+        `POC \`${formatPrice(vp.poc_price as number)}\` 距现价 ${pctText(
+          vp.poc_distance_pct as number,
+        )}。`,
+      );
+    }
+  }
+  if (typeof nr === "number" && typeof nrDist === "number") {
+    lines.push(`上方最近阻力：\`${formatPrice(nr)}\`（${pctText(nrDist)}）。`);
+  }
+  if (typeof ns === "number" && typeof nsDist === "number") {
+    lines.push(`下方最近支撑：\`${formatPrice(ns)}\`（${pctText(nsDist)}）。`);
+  }
+  lines.push(
+    `**关键位规模**：HVN ${hvn.length} 节点 · 订单块 ${ob.length} 段 · 绝对区域 ${az.length} 段。`,
+  );
+
+  const tone: BriefingTone =
+    vp?.last_price_position === "in_va" ? "neutral" : "warn";
+  return { tone, headline: "价值带画像", lines };
+}
+
+function liquidityBriefing(snap: SnapAccess): Briefing {
+  const cascades = snap.list<Record<string, unknown>>("cascade_bands");
+  const retails = snap.list<Record<string, unknown>>("retail_stop_bands");
+  const vacuums = snap.list<Record<string, unknown>>("vacuums");
+  const heat = snap.list<Record<string, unknown>>("heatmap");
+  const fuel = snap.list<Record<string, unknown>>("liquidation_fuel");
+
+  const above = (xs: Record<string, unknown>[]) =>
+    xs.filter((b) => Number(b.distance_pct ?? 0) > 0).length;
+  const below = (xs: Record<string, unknown>[]) =>
+    xs.filter((b) => Number(b.distance_pct ?? 0) <= 0).length;
+
+  const lines: string[] = [];
+
+  // 最近的爆仓带
+  const allCascadeSorted = [...cascades].sort(
+    (a, b) => Math.abs(Number(a.distance_pct ?? 1)) - Math.abs(Number(b.distance_pct ?? 1)),
+  );
+  const nearest = allCascadeSorted[0];
+  if (nearest) {
+    const distPct = Number(nearest.distance_pct ?? 0);
+    const direction = distPct > 0 ? "上方" : "下方";
+    lines.push(
+      `**最近爆仓带**：${direction} \`${formatPrice(
+        nearest.avg_price as number,
+      )}\`（${pctText(distPct)}） · ${nearest.side ?? "—"}。`,
+    );
+  }
+
+  lines.push(
+    `**爆仓带**：上方 ${above(cascades)} 条 / 下方 ${below(cascades)} 条；散户止损：上方 ${above(
+      retails,
+    )} / 下方 ${below(retails)}。`,
+  );
+  if (heat.length > 0)
+    lines.push(`**爆仓热力**：上方 ${above(heat)} 区 / 下方 ${below(heat)} 区。`);
+  if (fuel.length > 0)
+    lines.push(`**爆仓燃料**：上方 ${above(fuel)} / 下方 ${below(fuel)}。`);
+  if (vacuums.length > 0)
+    lines.push(`**真空带**：上方 ${above(vacuums)} / 下方 ${below(vacuums)} — 流动性枯竭区。`);
+
+  const aboveCount = above(cascades) + above(retails);
+  const belowCount = below(cascades) + below(retails);
+  const tone: BriefingTone =
+    aboveCount > belowCount * 1.5
+      ? "bad"
+      : belowCount > aboveCount * 1.5
+        ? "good"
+        : "neutral";
+  return { tone, headline: "流动性地图", lines };
+}
+
+function structureBriefing(snap: SnapAccess): Briefing {
+  const choch = snap.get<Record<string, unknown>>("choch_latest");
+  const chochs = snap.list("choch_recent");
+  const sweepCount = snap.get<number>("sweep_count_recent") ?? 0;
+  const sweepLast = snap.get<Record<string, unknown>>("sweep_last");
+  const piStreak = snap.get<number>("power_imbalance_streak") ?? 0;
+  const piSide = snap.get<string>("power_imbalance_streak_side");
+  const exhStreak = snap.get<number>("exhaustion_streak") ?? 0;
+
+  const lines: string[] = [];
+  if (choch) {
+    const dir =
+      choch.direction === "bullish" ? "向上突破" : choch.direction === "bearish" ? "向下破位" : "—";
+    const bs = typeof choch.bars_since === "number" ? `${choch.bars_since} 根前` : "近期";
+    lines.push(
+      `${bs} **${choch.kind ?? "CHoCH/BOS"}** ${dir} @ \`${formatPrice(choch.price as number)}\`（被砸穿前高/前低 \`${formatPrice(choch.level_price as number)}\`）。`,
+    );
+  } else {
+    lines.push(`本周期暂无 CHoCH/BOS 破位事件（最近 ${chochs.length} 根扫描结果）。`);
+  }
+
+  if (sweepLast) {
+    const dir = (sweepLast.direction as string) === "up" ? "向上" : "向下";
+    lines.push(`**流动性扫荡**：近窗 ${sweepCount} 次，最近一次 ${dir}扫损。`);
+  } else {
+    lines.push(`**流动性扫荡**：近窗 0 次（市场没有显著扫损动作）。`);
+  }
+
+  if (piStreak >= 3) {
+    lines.push(`**能量失衡**：连续 ${piStreak} 根（${piSide}） — 行情发动信号。`);
+  } else {
+    lines.push(`**能量失衡**：streak ${piStreak} 根（< 3，未触发发动）。`);
+  }
+
+  if (exhStreak >= 3) {
+    lines.push(`**趋势衰竭近窗**：连续 ${exhStreak} 根 — 反转风险升高。`);
+  }
+
+  const tone: BriefingTone =
+    choch || sweepCount > 2 || piStreak >= 3
+      ? "warn"
+      : exhStreak >= 3
+        ? "bad"
+        : "neutral";
+  return { tone, headline: "结构事件画像", lines };
+}
+
+function mainForceBriefing(snap: SnapAccess): Briefing {
+  const smart = snap.get<Record<string, unknown>>("smart_money_ongoing");
+  const reso = snap.get<number>("resonance_count_recent") ?? 0;
+  const resoBuy = snap.get<number>("resonance_buy_count") ?? 0;
+  const resoSell = snap.get<number>("resonance_sell_count") ?? 0;
+  const whale = snap.get<string>("whale_net_direction");
+  const heat = snap.get<Record<string, unknown>>("time_heatmap_view");
+
+  const lines: string[] = [];
+  if (smart) {
+    const stage = smart.type === "Accumulation" ? "**吸筹**" : "**派发**";
+    lines.push(
+      `**聪明钱进行中段**：${stage}，建仓均价 \`${formatPrice(
+        smart.avg_price as number,
+      )}\`${smart.start_time ? `（起始 ${fmtTime(smart.start_time)}）` : ""}。`,
+    );
+  } else {
+    lines.push(`**聪明钱**：当前无进行中段。`);
+  }
+
+  if (reso > 0) {
+    lines.push(
+      `**跨所共振**：近窗 ${reso} 次（买 ${resoBuy} / 卖 ${resoSell}）— 多平台同向异常大单。`,
+    );
+  } else {
+    lines.push(`**跨所共振**：近窗 0 次（无显著多平台共振）。`);
+  }
+
+  if (whale && whale !== "neutral") {
+    lines.push(
+      `**巨鲸方向**：${whale === "buy" ? "**买入主导**" : "**卖出主导**"}。`,
+    );
+  } else {
+    lines.push(`**巨鲸方向**：中性（无明显单边）。`);
+  }
+
+  if (heat) {
+    const session = heat.is_active_session ? "**活跃时段**（信号有效）" : "**垃圾时段**（信号慎重）";
+    const rank = heat.current_rank;
+    lines.push(
+      `**时段**：UTC ${typeof heat.current_hour === "number" ? heat.current_hour : "—"}:00 · rank #${rank ?? "—"} — ${session}。`,
+    );
+  }
+
+  const tone: BriefingTone =
+    smart?.type === "Accumulation" && (whale === "buy" || resoBuy > resoSell)
+      ? "good"
+      : smart?.type === "Distribution" && (whale === "sell" || resoSell > resoBuy)
+        ? "bad"
+        : "neutral";
+  return { tone, headline: "主力族画像", lines };
+}
+
+function categoryBriefing(kind: CategoryKey, snap: SnapAccess): Briefing {
+  switch (kind) {
+    case "trend":
+      return trendBriefing(snap);
+    case "value":
+      return valueBriefing(snap);
+    case "liquidity":
+      return liquidityBriefing(snap);
+    case "structure":
+      return structureBriefing(snap);
+    case "main_force":
+      return mainForceBriefing(snap);
+  }
+}
+
+/** 渲染白话总结面板：左边色条 + headline + 列表，染色随 tone。 */
+function BriefingPanel({
+  brief,
+  variant = "category",
+}: {
+  brief: Briefing;
+  variant?: "market" | "category";
+}) {
+  const toneClass =
+    brief.tone === "good"
+      ? "border-emerald-500/40 bg-emerald-500/5"
+      : brief.tone === "bad"
+        ? "border-rose-500/40 bg-rose-500/5"
+        : brief.tone === "warn"
+          ? "border-amber-500/40 bg-amber-500/5"
+          : "border-border/50 bg-card/40";
+  const headTone =
+    brief.tone === "good"
+      ? "text-emerald-400"
+      : brief.tone === "bad"
+        ? "text-rose-400"
+        : brief.tone === "warn"
+          ? "text-amber-400"
+          : "text-foreground";
+  return (
+    <div className={cn("rounded-lg border p-3 sm:p-4", toneClass)}>
+      <div className="flex items-center gap-2">
+        <span
+          className={cn(
+            "inline-block h-4 w-1 rounded",
+            brief.tone === "good" && "bg-emerald-400",
+            brief.tone === "bad" && "bg-rose-400",
+            brief.tone === "warn" && "bg-amber-400",
+            brief.tone === "neutral" && "bg-primary/60",
+          )}
+        />
+        <span
+          className={cn(
+            "text-xs uppercase tracking-[0.18em]",
+            variant === "market" ? "text-muted-foreground" : "text-muted-foreground/80",
+          )}
+        >
+          {variant === "market" ? "白话总览（小白指南）" : "本类指标白话总结"}
+        </span>
+        <span className={cn("text-sm font-semibold", headTone)}>· {brief.headline}</span>
+      </div>
+      {brief.lines.length > 0 ? (
+        <ul className="mt-2 space-y-1 text-sm leading-relaxed">
+          {brief.lines.map((l, i) => (
+            <li key={i} className="flex gap-2 text-foreground/90">
+              <span className="text-muted-foreground/60">·</span>
+              <span dangerouslySetInnerHTML={{ __html: htmlBriefingLine(l) }} />
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <div className="mt-2 text-sm text-muted-foreground">
+          数据不足，无法给出白话结论。
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 把简单 markdown（**bold** 和 反引号 code）渲染成 HTML。
+ * 仅在 BriefingPanel 内部受控字符串使用，避免 XSS（输入全部来自 snapshot 数值/枚举）。 */
+function htmlBriefingLine(s: string): string {
+  const escaped = s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+  return escaped
+    .replace(/\*\*(.+?)\*\*/g, '<strong class="font-semibold text-foreground">$1</strong>')
+    .replace(
+      /`([^`]+)`/g,
+      '<code class="num rounded bg-secondary/40 px-1 py-0.5 text-[12px] text-primary">$1</code>',
+    );
+}
+
+// ─────────────────────────────────────────────────────
 // 页面主体
 // ─────────────────────────────────────────────────────
 
@@ -2007,6 +2508,16 @@ export default function IndicatorsPage() {
   const last_price = snap.get<number>("last_price");
   const anchor_ts = snap.get<number>("anchor_ts");
   const stale = snap.list<string>("stale_tables");
+
+  const hasData = !query.isLoading && !query.isError && Boolean(query.data);
+  const market = useMemo(
+    () => (hasData ? marketBriefing(snap) : null),
+    [hasData, snap],
+  );
+  const cat = useMemo(
+    () => (hasData ? categoryBriefing(active, snap) : null),
+    [hasData, active, snap],
+  );
 
   return (
     <div className="grid gap-4">
@@ -2059,6 +2570,9 @@ export default function IndicatorsPage() {
         </div>
       </div>
 
+      {/* 整体白话总览 */}
+      {market && <BriefingPanel brief={market} variant="market" />}
+
       {/* 5 个分类 sub-tab */}
       <div className="panel-glass rounded-lg p-2">
         <div className="flex flex-wrap gap-1">
@@ -2106,6 +2620,7 @@ export default function IndicatorsPage() {
 
       {!query.isLoading && !query.isError && (
         <>
+          {cat && <BriefingPanel brief={cat} variant="category" />}
           {active === "trend" && <TrendTab snap={snap} />}
           {active === "value" && <ValueTab snap={snap} />}
           {active === "liquidity" && <LiquidityTab snap={snap} />}

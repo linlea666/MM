@@ -14,7 +14,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from backend.ai.analyzer import DeepAnalyzer
+from backend.ai.analyzer import OnePassAnalyzer
 from backend.ai.config import AIRuntimeConfig, build_from_rules
 from backend.ai.observer import AIObserver, ObserverSettings
 from backend.ai.providers import DeepSeekProvider, LLMProvider, StubProvider
@@ -54,13 +54,13 @@ class AIObservationService:
             ring_size=self._cfg.deep_ring_size,
             jsonl_path=self._resolve_jsonl_path(self._cfg.deep_jsonl_relpath),
         )
-        self._analyzer = DeepAnalyzer(
+        self._analyzer = OnePassAnalyzer(
             provider=self._provider,
             report_store=self._report_store,
             model_tier=self._cfg.model_tier,
             thinking_enabled=self._cfg.thinking_enabled,
-            max_tokens_l4=self._cfg.deep_max_tokens,
-            timeout_s_l4=self._cfg.deep_timeout_s_l4,
+            max_tokens=self._cfg.deep_max_tokens,
+            timeout_s=self._cfg.deep_timeout_s_l4,
         )
 
     # ── 构造辅助 ────────────────────────────────────────────
@@ -121,7 +121,7 @@ class AIObservationService:
         return self._report_store
 
     @property
-    def analyzer(self) -> DeepAnalyzer:
+    def analyzer(self) -> OnePassAnalyzer:
         return self._analyzer
 
     @property
@@ -169,8 +169,8 @@ class AIObservationService:
         self._analyzer._provider = self._provider
         self._analyzer._tier = new_cfg.model_tier
         self._analyzer._thinking = new_cfg.thinking_enabled
-        self._analyzer._max_l4 = new_cfg.deep_max_tokens
-        self._analyzer._t4 = new_cfg.deep_timeout_s_l4
+        self._analyzer._max_tokens = new_cfg.deep_max_tokens
+        self._analyzer._timeout_s = new_cfg.deep_timeout_s_l4
         # store ring_size 和 jsonl path 可能变
         if (
             self._store.size() == 0

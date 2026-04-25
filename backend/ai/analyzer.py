@@ -1,16 +1,18 @@
-"""V1.1 · AI 深度分析编排器（DeepAnalyzer · Layer 4）。
+"""V1.2 · AI 综合分析编排器（OnePassAnalyzer）。
 
 设计取舍：
-- **不复用 ``AIObserver``**：observer 受节流 / 缓存约束、且不保留 raw_payloads；
-  深度分析路径要保证四层都"干净跑一次"，三段原文（system/user/raw）全部留盘。
-- **四层串行 + 一次并行**：
-    1) ``L1 TrendClassifier`` 与 ``L2 MoneyFlowReader`` 并行（独立可并发）；
-    2) ``L3 TradePlanner``：拿到 L1/L2 narrative 后串行（强依赖）；
-    3) ``L4 DeepAnalyzer``：再串行，喂入前三层 narrative 产出研报。
-- **失败容忍**：任一层失败仍写一份 ``AnalysisReport(status='error', error_reason=...)``，
-  原始 prompt 仍然落盘（便于排查）。
+- **1 次 LLM 调用**：替代老的 L1→L2→L3→L4 四层串联。
+  老架构在 deepseek-v4-flash 上经常因 finish_reason="stop" 早停而 schema 验证失败；
+  OnePass 把所有指标一次性喂给模型，让它"同时综合所有维度"输出一份研报，更贴合用户
+  最初的"把所有指标发给 AI 让它综合分析"诉求；
+- **payload = FeatureSnapshot 全量**：不再用裁剪过的 ``AIObserverInput``，
+  让模型看到 23 个指标的最新值（爆仓带 / 热力图 / CHoCH / 共振 / 聪明钱…）。
+  代价是单次输入 token 增加（30-50 KB JSON ≈ 10-20k input tokens），
+  但 V4 模型对 1 MB 内输入完全无压力，远未触及上下文上限；
+- **失败仍落盘**：模型异常时仍写一份 ``AnalysisReport(status='error')``，
+  完整 raw_payloads 保留（便于排查）。
 
-线程/并发：``analyze()`` 内部用 asyncio.gather；外层不需要再加锁。
+线程/并发：``analyze()`` 内部用 asyncio.Lock；外层不需要再加锁。
 """
 
 from __future__ import annotations
@@ -20,22 +22,12 @@ import logging
 import time
 from datetime import datetime, timezone
 
-from backend.ai.agents import (
-    AgentResult,
-    run_deep_analyze_agent,
-    run_money_flow_agent,
-    run_trade_plan_agent,
-    run_trend_agent,
-)
-from backend.ai.observer import build_observer_input
+from backend.ai.agents import AgentResult, run_onepass_agent
 from backend.ai.providers.base import LLMProvider
 from backend.ai.schemas import (
     AIRawPayloadDump,
     AnalysisReport,
-    DeepAnalyzeLayerOut,
-    MoneyFlowLayerOut,
-    TradePlanLayerOut,
-    TrendLayerOut,
+    OnePassReport,
 )
 from backend.ai.storage import AnalysisReportStore
 from backend.rules.features import FeatureSnapshot
@@ -61,8 +53,52 @@ def _payload_dump(r: AgentResult) -> AIRawPayloadDump:
     )
 
 
-class DeepAnalyzer:
-    """L1+L2+L3+L4 编排 + AnalysisReport 持久化。"""
+def _onepass_to_markdown(out: OnePassReport) -> str:
+    """把 OnePassReport 的结构化字段 + report_md 拼成最终展示的 markdown。
+
+    前端 ``AnalysisReportPage`` 直接读 ``report_md``；为了让 hero / 列表 / 详情页
+    多个入口拿到的内容一致，把要点 / 风险 / 重点关注三组 list 也拼接到 markdown
+    顶部，再接模型自己写的 report_md。这样无论用户从哪儿点进来，都能一屏看清。
+    """
+    lines: list[str] = []
+    bias_label = {"bullish": "偏多", "bearish": "偏空", "neutral": "中性"}.get(
+        out.overall_bias, out.overall_bias
+    )
+    lines.append(f"> **综合方向**：{bias_label}　|　**信心**：{out.confidence:.0%}")
+    lines.append("")
+    lines.append(f"> **一句话**：{out.one_line}")
+    lines.append("")
+
+    if out.key_takeaways:
+        lines.append("## 核心要点")
+        lines.append("")
+        for tk in out.key_takeaways:
+            lines.append(f"- {tk}")
+        lines.append("")
+
+    if out.key_risks:
+        lines.append("## 关键风险")
+        lines.append("")
+        for r in out.key_risks:
+            lines.append(f"- {r}")
+        lines.append("")
+
+    if out.next_focus:
+        lines.append("## 接下来重点关注")
+        lines.append("")
+        for f in out.next_focus:
+            lines.append(f"- {f}")
+        lines.append("")
+
+    body = (out.report_md or "").strip()
+    if body:
+        lines.append(body)
+
+    return "\n".join(lines).strip()
+
+
+class OnePassAnalyzer:
+    """单次综合分析编排器 + AnalysisReport 持久化。"""
 
     def __init__(
         self,
@@ -71,104 +107,56 @@ class DeepAnalyzer:
         report_store: AnalysisReportStore,
         model_tier: str = "flash",
         thinking_enabled: bool = False,
-        timeout_s_l1: float = 30.0,
-        timeout_s_l2: float = 30.0,
-        timeout_s_l3: float = 60.0,
-        timeout_s_l4: float = 90.0,
-        max_tokens_l4: int = 4096,
+        max_tokens: int = 8192,
+        timeout_s: float = 120.0,
+        temperature: float = 0.25,
     ) -> None:
         self._provider = provider
         self._store = report_store
         self._tier = model_tier
         self._thinking = thinking_enabled
-        self._t1 = timeout_s_l1
-        self._t2 = timeout_s_l2
-        self._t3 = timeout_s_l3
-        self._t4 = timeout_s_l4
-        self._max_l4 = max_tokens_l4
+        self._max_tokens = max_tokens
+        self._timeout_s = timeout_s
+        self._temperature = temperature
         self._lock = asyncio.Lock()
 
     async def analyze(self, snap: FeatureSnapshot) -> AnalysisReport:
-        """主入口：跑四层并落盘一条 AnalysisReport。"""
-        async with self._lock:  # 同一 analyzer 串行，避免并发烧 token
+        """主入口：跑一次 OnePass 并落盘一条 AnalysisReport。"""
+        async with self._lock:  # 同 analyzer 串行，避免并发烧 token
             return await self._analyze_unsafe(snap)
 
     async def _analyze_unsafe(self, snap: FeatureSnapshot) -> AnalysisReport:
         ts_ms = int(time.time() * 1000)
         report_id = _build_report_id(snap.symbol, snap.tf, ts_ms)
-        payload = build_observer_input(snap)
-        data_slice = payload.model_dump_json(indent=2)
+        # 完整 FeatureSnapshot 投影（不裁剪），让模型看到所有指标
+        snap_json = snap.model_dump_json()
 
         started = time.perf_counter()
 
-        # L1 + L2 并行
-        r1, r2 = await asyncio.gather(
-            run_trend_agent(
-                provider=self._provider,
-                payload=payload,
-                model_tier=self._tier,
-                timeout_s=self._t1,
-                thinking_enabled=self._thinking,
-            ),
-            run_money_flow_agent(
-                provider=self._provider,
-                payload=payload,
-                trend_narrative=None,
-                model_tier=self._tier,
-                timeout_s=self._t2,
-                thinking_enabled=self._thinking,
-            ),
-        )
-        trend_out: TrendLayerOut | None = r1.output  # type: ignore[assignment]
-        mf_out: MoneyFlowLayerOut | None = r2.output  # type: ignore[assignment]
-
-        # L3 强制跑（深度分析里用户希望看到完整计划评估）
-        r3 = await run_trade_plan_agent(
+        result = await run_onepass_agent(
             provider=self._provider,
-            payload=payload,
-            trend_narrative=trend_out.narrative if trend_out else None,
-            money_flow_narrative=mf_out.narrative if mf_out else None,
+            payload_json=snap_json,
             model_tier=self._tier,
-            timeout_s=self._t3,
+            temperature=self._temperature,
+            max_tokens=self._max_tokens,
+            timeout_s=self._timeout_s,
             thinking_enabled=self._thinking,
         )
-        plan_out: TradePlanLayerOut | None = r3.output  # type: ignore[assignment]
-
-        # L4 综合
-        r4 = await run_deep_analyze_agent(
-            provider=self._provider,
-            payload=payload,
-            trend_narrative=trend_out.narrative if trend_out else None,
-            money_flow_narrative=mf_out.narrative if mf_out else None,
-            trade_plan_narrative=plan_out.narrative if plan_out else None,
-            model_tier=self._tier,
-            max_tokens=self._max_l4,
-            timeout_s=self._t4,
-            thinking_enabled=self._thinking,
-        )
-        deep_out: DeepAnalyzeLayerOut | None = r4.output  # type: ignore[assignment]
 
         total_latency_ms = int((time.perf_counter() - started) * 1000)
+        total_tokens = int((result.usage or {}).get("total_tokens", 0))
 
-        # 汇总 token / 错误
-        total_tokens = 0
-        errors: list[str] = []
-        for r in (r1, r2, r3, r4):
-            total_tokens += int((r.usage or {}).get("total_tokens", 0))
-            if r.error:
-                errors.append(f"{r.layer}: {r.error}")
-
-        # 状态判定：只要 L4 出来就算 ok（L1-L3 缺失，L4 仍然能给出"无判定"研报）
-        if deep_out is None:
+        out: OnePassReport | None = result.output  # type: ignore[assignment]
+        if out is None:
             status: str = "error"
-            error_reason = "; ".join(errors) or "deep_analyze 层失败"
+            error_reason = result.error or "onepass 调用失败"
             one_line = ""
             report_md = ""
         else:
             status = "ok"
-            error_reason = "; ".join(errors) if errors else None
-            one_line = deep_out.one_line
-            report_md = deep_out.report_md
+            error_reason = None
+            one_line = out.one_line
+            report_md = _onepass_to_markdown(out)
 
         report = AnalysisReport(
             id=report_id,
@@ -183,14 +171,19 @@ class DeepAnalyzer:
             total_latency_ms=total_latency_ms,
             one_line=one_line,
             report_md=report_md,
-            raw_payloads=[_payload_dump(r) for r in (r1, r2, r3, r4)],
-            data_slice=data_slice,
+            raw_payloads=[_payload_dump(result)],
+            data_slice=snap_json,
         )
 
         await self._store.append(report)
         logger.info(
-            f"AI deep analyze {snap.symbol}/{snap.tf} status={status} "
+            f"AI onepass analyze {snap.symbol}/{snap.tf} status={status} "
             f"latency={total_latency_ms}ms tokens={total_tokens} id={report_id}",
-            extra={"tags": ["AI"], "context": {"errors": errors[:3]}},
+            extra={"tags": ["AI"], "context": {"error": result.error}},
         )
         return report
+
+
+# Backwards-compat alias：service.py / 测试代码以前 import DeepAnalyzer，
+# 名字保留以减少 churn；行为完全等价于 OnePassAnalyzer。
+DeepAnalyzer = OnePassAnalyzer

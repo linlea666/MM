@@ -8,9 +8,9 @@
     GET  /api/ai/observations/latest   最新一条 feed item + summary
     POST /api/ai/observations/run      强制触发一次观察（body: symbol, tf, force_trade_plan）
 
-    POST /api/ai/analyze               触发一次 4 层深度分析（耗时较长，~30~120s）
-    GET  /api/ai/reports               最近 N 份深度分析报告（仅摘要）
-    GET  /api/ai/reports/{report_id}   单份完整报告（含 4 层 raw_payloads + data_slice）
+    POST /api/ai/analyze               触发一次 OnePass 综合分析（单次 LLM 调用，~5-15s）
+    GET  /api/ai/reports               最近 N 份综合分析报告（仅摘要）
+    GET  /api/ai/reports/{report_id}   单份完整报告（含 OnePass raw_payloads + data_slice）
 
 所有响应里的 api_key 均以 mask 形态暴露；审计日志记录 provider/trigger 但不记录模型原文。
 """
@@ -64,11 +64,11 @@ class RunRequest(BaseModel):
 
 
 class AnalyzeRequest(BaseModel):
-    """触发深度分析请求。
+    """触发 OnePass 综合分析请求。
 
     - ``symbol`` 缺省时取首个 active 订阅；
     - ``tf`` 默认 1h；
-    - 4 层串行 + 并行总耗时较大，建议前端 UI 走「按钮 + 进度提示」交互。
+    - V1.2 起改为单次 LLM 调用（OnePass），耗时约 5-15s（较老 4 层架构降低 ~75%）。
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -232,11 +232,12 @@ async def run_deep_analyze(
     svc: AIObservationService = Depends(_ai_service),
     sub_repo: SubscriptionRepository = Depends(get_sub_repo),
 ) -> dict[str, Any]:
-    """触发一次 4 层深度分析并立即返回完整报告。
+    """触发一次 OnePass 综合分析并立即返回完整报告。
 
     - 不受 observer 节流约束；
     - 与 ``/observations/run`` 走 **同一 provider + 同一 model_tier**；
     - 失败时仍返回 ``status='error'`` 报告（前端可点进去看 raw_payloads 排查）。
+    - V1.2 起：单次 LLM 调用（替代老 4 层串联），延迟与 token 双降。
     """
     if not svc.config.enabled:
         raise HTTPException(status_code=400, detail="AI 未启用（ai.enabled=false）")
@@ -257,7 +258,7 @@ async def run_deep_analyze(
         report = await svc.analyzer.analyze(snap)
     except Exception as e:  # noqa: BLE001
         logger.exception(f"/api/ai/analyze 失败: {e}")
-        raise HTTPException(status_code=500, detail=f"AI 深度分析失败: {e}") from e
+        raise HTTPException(status_code=500, detail=f"AI 综合分析失败: {e}") from e
 
     logger.info(
         f"/api/ai/analyze ok symbol={symbol} tf={payload.tf} "
@@ -295,7 +296,7 @@ async def get_report(
     report_id: str,
     svc: AIObservationService = Depends(_ai_service),
 ) -> dict[str, Any]:
-    """单份完整报告（含 4 层 raw_payloads + data_slice）。"""
+    """单份完整报告（含 OnePass raw_payloads + data_slice）。"""
     report = await svc.report_store.get(report_id)
     if report is None:
         raise HTTPException(status_code=404, detail=f"未找到报告 {report_id}")

@@ -18,8 +18,8 @@ from pydantic import BaseModel
 
 from backend.ai.prompts import (
     COMMON_RULES,
-    DEEP_ANALYZE_SYSTEM_PROMPT,
     MONEY_FLOW_SYSTEM_PROMPT,
+    ONEPASS_SYSTEM_PROMPT,
     TRADE_PLAN_SYSTEM_PROMPT,
     TREND_SYSTEM_PROMPT,
     build_user_message,
@@ -27,8 +27,8 @@ from backend.ai.prompts import (
 from backend.ai.providers.base import LLMProvider, ProviderError
 from backend.ai.schemas import (
     AIObserverInput,
-    DeepAnalyzeLayerOut,
     MoneyFlowLayerOut,
+    OnePassReport,
     TradePlanLayerOut,
     TrendLayerOut,
 )
@@ -44,7 +44,7 @@ class AgentResult:
     "AI 交互过程原文"展示（图 5）。三段非空才能给前端做跨模型对照。
     """
 
-    layer: str                        # "trend" / "money_flow" / "trade_plan" / "deep_analyze"
+    layer: str                        # "trend" / "money_flow" / "trade_plan" / "onepass"
     output: BaseModel | None          # 对应 schema 实例（失败时 None）
     model: str
     usage: dict[str, int]
@@ -230,37 +230,32 @@ async def run_trade_plan_agent(
     )
 
 
-async def run_deep_analyze_agent(
+async def run_onepass_agent(
     *,
     provider: LLMProvider,
-    payload: AIObserverInput,
-    trend_narrative: str | None = None,
-    money_flow_narrative: str | None = None,
-    trade_plan_narrative: str | None = None,
+    payload_json: str,
     model_tier: str = "flash",
     temperature: float = 0.25,
-    max_tokens: int = 4096,
-    timeout_s: float = 90.0,
+    max_tokens: int = 8192,
+    timeout_s: float = 120.0,
     thinking_enabled: bool = False,
 ) -> AgentResult:
-    """Layer 4 · 深度研报。
+    """OnePass · 单次综合分析（V1.2 替代旧 4 层串联）。
 
-    流程上由 ``analyzer`` 编排：先跑 L1+L2+L3 拿三段 narrative，再喂给本层。
-    本层默认 ``flash``（用户选 pro 时整套切 pro），输出长 markdown，token 较多。
+    一次喂入完整 ``FeatureSnapshot`` 序列化（``payload_json``，由调用方决定投影范围），
+    模型同时综合所有指标，输出一份 ``OnePassReport``。
+
+    与老 4 层 DeepAnalyzer 的关键差异：
+    - **1 次 API 调用**：失败概率从 4 点叠加降到 1 点，token / 延迟均降至 ~1/3；
+    - **schema 极简**：markdown 为主体，不强制章节顺序；
+    - **payload_json 由调用方塞**：通常是 ``FeatureSnapshot.model_dump_json()`` 全量，
+      这样模型能直接看到 23 个指标的最新值（爆仓带、热力图、CHoCH、共振、聪明钱…）。
     """
     model_name = provider.models.get(model_tier, model_tier)
-    system = f"{COMMON_RULES}\n\n{DEEP_ANALYZE_SYSTEM_PROMPT}"
-    prior: dict[str, str] = {}
-    if trend_narrative:
-        prior["Layer 1 · TrendClassifier"] = trend_narrative
-    if money_flow_narrative:
-        prior["Layer 2 · MoneyFlowReader"] = money_flow_narrative
-    if trade_plan_narrative:
-        prior["Layer 3 · TradePlanner"] = trade_plan_narrative
+    system = f"{COMMON_RULES}\n\n{ONEPASS_SYSTEM_PROMPT}"
     user = build_user_message(
-        layer="Layer 4 · DeepAnalyzer",
-        payload_json=payload.model_dump_json(),
-        prior_outputs=prior or None,
+        layer="OnePass · ComprehensiveAnalyzer",
+        payload_json=payload_json,
     )
     started = time.perf_counter()
     try:
@@ -269,7 +264,7 @@ async def run_deep_analyze_agent(
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
-            schema=DeepAnalyzeLayerOut,
+            schema=OnePassReport,
             model=model_name,
             temperature=temperature,
             max_tokens=max_tokens,
@@ -278,11 +273,11 @@ async def run_deep_analyze_agent(
         )
     except ProviderError as e:
         logger.warning(
-            f"deep_analyze agent failed: {e}",
+            f"onepass agent failed: {e}",
             extra={"tags": ["AI"], "context": {"kind": e.kind}},
         )
         return AgentResult(
-            layer="deep_analyze",
+            layer="onepass",
             output=None,
             model=model_name,
             usage={},
@@ -293,7 +288,7 @@ async def run_deep_analyze_agent(
             raw_response="",
         )
     return AgentResult(
-        layer="deep_analyze",
+        layer="onepass",
         output=resp.parsed,
         model=resp.model or model_name,
         usage=resp.usage,

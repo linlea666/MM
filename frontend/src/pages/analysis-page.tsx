@@ -84,7 +84,7 @@ function ReportRow({ item }: { item: AIReportsListItem }) {
             isErr ? "text-destructive" : "text-foreground",
           )}
         >
-          {item.one_line || (isErr ? "深度分析失败，点击查看 raw_payloads" : "（无摘要）")}
+          {item.one_line || (isErr ? "AI 综合分析失败，点击查看 raw_payloads" : "（无摘要）")}
         </div>
         <div className="text-[11px] text-muted-foreground/70 truncate">
           {fmtTs(item.ts)} · id={item.id}

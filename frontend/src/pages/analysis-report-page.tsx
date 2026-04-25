@@ -1,11 +1,11 @@
 /**
- * AI 深度分析 · 单条详情。
+ * AI 综合分析 · 单条详情（V1.2 OnePass）。
  *
  * 顶部：摘要 hero（一句话 / 状态 / token / latency / 模型）。
- * 中部：完整 Markdown 报告（report_md，对应 L4 输出）。
- * 底部："AI 交互过程原文"区块（图 5 风格）：每层一个可展开抽屉，
- *      展示 system_prompt / user_prompt / raw_response 三段，
- *      额外加一个"跨模型对照数据切片"卡（data_slice，已剥规则/指令）。
+ * 中部：完整 Markdown 报告（report_md）。
+ * 底部："AI 交互过程原文"区块（图 5 风格）：
+ *      OnePass 单层 → 一个 System / User / Raw Response 三段 + 数据切片。
+ *      （V1.1 老版本是 4 层，按 layer 数组循环；V1.2 起单层但仍兼容多层。）
  */
 
 import { useState } from "react";
@@ -115,23 +115,31 @@ const LAYER_META: Record<
   string,
   { title: string; hint: string }
 > = {
+  // V1.2 主用：OnePass 单次综合
+  onepass: {
+    title: "OnePass · 综合分析（单次 LLM 调用）",
+    hint: "一次喂入完整 FeatureSnapshot · 综合所有指标 → 单份研报",
+  },
+  // V1.1 老版本兼容（如果数据库里还有旧报告，按 4 层渲染）
   trend: {
-    title: "L1 · TrendClassifier",
+    title: "L1 · TrendClassifier（旧版）",
     hint: "趋势方向 / 阶段 / 强度 / 置信度",
   },
   money_flow: {
-    title: "L2 · MoneyFlowReader",
+    title: "L2 · MoneyFlowReader（旧版）",
     hint: "主力动向 / 关键磁吸带 / 资金面叙事",
   },
   trade_plan: {
-    title: "L3 · TradePlanner",
+    title: "L3 · TradePlanner（旧版）",
     hint: "交易计划草案 / 触发条件 / R:R / 风险旗标",
   },
   deep_analyze: {
-    title: "L4 · DeepAnalyzer",
+    title: "L4 · DeepAnalyzer（旧版）",
     hint: "综合研报 markdown 原文 / 多场景预演 / 复盘建议",
   },
 };
+
+const LAYER_ORDER = ["onepass", "trend", "money_flow", "trade_plan", "deep_analyze"] as const;
 
 export default function AnalysisReportPage() {
   const { reportId } = useParams<{ reportId: string }>();
@@ -191,9 +199,14 @@ export default function AnalysisReportPage() {
   const r = q.data;
   const isErr = r.status === "error";
 
-  // 找到各层的 raw payload
-  const findPayload = (layer: string): AIRawPayload | undefined =>
-    r.raw_payloads.find((p) => p.layer === layer);
+  // V1.2 起仅有 onepass 一段；V1.1 老报告会有 4 段
+  const orderedPayloads: AIRawPayload[] = LAYER_ORDER
+    .map((layer) => r.raw_payloads.find((p) => p.layer === layer))
+    .filter((p): p is AIRawPayload => Boolean(p));
+  // 兜底：万一 raw_payloads 里有没在 LAYER_ORDER 中的 layer，按原顺序追加
+  for (const p of r.raw_payloads) {
+    if (!orderedPayloads.includes(p)) orderedPayloads.push(p);
+  }
 
   return (
     <div className="container mx-auto p-4 max-w-5xl space-y-6">
@@ -234,7 +247,7 @@ export default function AnalysisReportPage() {
                 isErr ? "text-destructive" : "text-foreground",
               )}
             >
-              {r.one_line || (isErr ? "深度分析失败" : "（无摘要）")}
+              {r.one_line || (isErr ? "AI 综合分析失败" : "（无摘要）")}
             </h1>
             <div className="mt-1 text-xs text-muted-foreground">
               {fmtTs(r.ts)} · id={r.id}
@@ -287,12 +300,13 @@ export default function AnalysisReportPage() {
         </div>
 
         <div className="space-y-2">
-          {(["trend", "money_flow", "trade_plan", "deep_analyze"] as const).map((layer) => {
-            const meta = LAYER_META[layer];
-            const p = findPayload(layer);
-            if (!p) return null;
+          {orderedPayloads.map((p, idx) => {
+            const meta = LAYER_META[p.layer] ?? {
+              title: p.layer,
+              hint: "未知层（兼容兜底）",
+            };
             return (
-              <div key={layer} className="space-y-1.5">
+              <div key={`${p.layer}-${idx}`} className="space-y-1.5">
                 <div className="text-xs text-muted-foreground flex items-center gap-2">
                   <Cpu className="size-3" />
                   <span className="font-medium text-foreground">{meta.title}</span>
@@ -304,19 +318,19 @@ export default function AnalysisReportPage() {
                   <span>{(p.latency_ms / 1000).toFixed(1)}s</span>
                 </div>
                 <RawPayloadRow
-                  title={`System Prompt`}
+                  title="System Prompt"
                   hint="AI 人设/裁决框架/输出格式契约"
                   Icon={MessageSquare}
                   text={p.system_prompt}
                 />
                 <RawPayloadRow
-                  title={`User Prompt（本轮喂给 AI 的完整数据）`}
+                  title="User Prompt（本轮喂给 AI 的完整数据）"
                   hint="规则约束 + 投影 input + 历史 narrative"
                   Icon={FileText}
                   text={p.user_prompt}
                 />
                 <RawPayloadRow
-                  title={`Raw Response（AI 返回的原始 JSON / Markdown 原文）`}
+                  title="Raw Response（AI 返回的原始 JSON / Markdown 原文）"
                   hint="模型最终输出（解析前）"
                   Icon={Scale}
                   text={p.raw_response}
