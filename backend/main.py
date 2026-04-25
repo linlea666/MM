@@ -21,6 +21,7 @@ from backend.api import (
     ai_router,
     config_router,
     dashboard_router,
+    indicators_router,
     logs_router,
     subscriptions_router,
     system_router,
@@ -105,7 +106,7 @@ async def lifespan(app: FastAPI):
     ws_dashboard = DashboardBroker(rule_runner, interval=5.0)
     ws_logs = LogBroker()
 
-    async def _on_rules_change(_ev: ConfigChangeEvent) -> None:
+    async def _on_rules_change(ev: ConfigChangeEvent) -> None:
         snap = rules_config_svc.snapshot()
         rule_runner._config = snap
         rule_runner._ext._config = snap
@@ -122,10 +123,17 @@ async def lifespan(app: FastAPI):
             logger.warning(
                 f"AI 服务热更新失败：{e}", extra={"tags": [Tags.CONFIG, "AI"]}
             )
-        logger.info(
-            "规则配置变更 → RuleRunner 已热更新 + 快照缓存已清空",
-            extra={"tags": [Tags.CONFIG, Tags.RULES]},
-        )
+        # V1.1 · 批量提交时一条日志即可（去抖后的效果）
+        if ev.kind == "set_batch":
+            logger.info(
+                f"规则配置批量变更 keys={ev.batch_keys} → RuleRunner 已热更新 + 快照缓存已清空",
+                extra={"tags": [Tags.CONFIG, Tags.RULES]},
+            )
+        else:
+            logger.info(
+                f"规则配置变更 key={ev.key} kind={ev.kind} → RuleRunner 已热更新 + 快照缓存已清空",
+                extra={"tags": [Tags.CONFIG, Tags.RULES]},
+            )
 
     rules_config_svc.subscribe(_on_rules_change)
 
@@ -259,6 +267,7 @@ def create_app() -> FastAPI:
     app.include_router(config_router)
     app.include_router(logs_router)
     app.include_router(ai_router)
+    app.include_router(indicators_router)
     app.include_router(ws_router)
 
     @app.get("/")

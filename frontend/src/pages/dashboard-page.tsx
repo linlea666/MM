@@ -21,6 +21,7 @@ import { CapabilityScoresInline } from "@/components/dashboard/capability-scores
 import { DashboardSkeleton } from "@/components/dashboard/dashboard-skeleton";
 import { DashboardError } from "@/components/dashboard/dashboard-error";
 import { ConnectionIndicator } from "@/components/dashboard/connection-indicator";
+import { RecentReportsCard } from "@/components/dashboard/recent-reports-card";
 import { Badge } from "@/components/ui/badge";
 import { AlertTriangle, ChevronDown, ChevronUp } from "lucide-react";
 
@@ -131,6 +132,9 @@ export default function DashboardPage() {
 
       {/* 行 4：近期异动（全宽） */}
       <TimelineCard events={snap.recent_events} />
+
+      {/* 行 4.5：最近 10 条 AI 深度分析报告 */}
+      <RecentReportsCard />
 
       {/* 行 5：六大能力评分（默认折叠） */}
       <div className="panel-glass rounded-lg">

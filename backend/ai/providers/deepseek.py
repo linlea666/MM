@@ -189,6 +189,14 @@ class DeepSeekProvider(LLMProvider):
             )
             raise pe
 
+        # 抽取 prompt 原文供 AnalysisReport 使用
+        # - 多个 system 拼接成一段
+        # - user 取最后一条（绝大多数业务里 user prompt 是单条 mega-message）
+        sys_segs = [m.get("content", "") for m in messages if m.get("role") == "system"]
+        user_segs = [m.get("content", "") for m in messages if m.get("role") == "user"]
+        sys_prompt_text = "\n\n---\n\n".join(s for s in sys_segs if s)
+        user_prompt_text = user_segs[-1] if user_segs else ""
+
         return LLMResponse(
             text=text,
             parsed=parsed,
@@ -199,6 +207,8 @@ class DeepSeekProvider(LLMProvider):
             },
             latency_ms=latency_ms,
             model=model,
+            system_prompt=sys_prompt_text,
+            user_prompt=user_prompt_text,
         )
 
     async def ping(self) -> bool:

@@ -18,7 +18,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class _Strict(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    # ``protected_namespaces=()`` 关闭 ``model_*`` 命名保护：我们在 AnalysisReport
+    # 等模型里用了 ``model_tier`` 这类业务字段，与 Pydantic 的 ``model_*`` 内置约定无冲突。
+    model_config = ConfigDict(extra="forbid", protected_namespaces=())
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -254,6 +256,98 @@ class SummaryBandPreview(_Strict):
     avg_price: float
     distance_pct: float
     note: str = Field(max_length=80)
+
+
+# ════════════════════════════════════════════════════════════════════
+# Layer 4 · DeepAnalyzer（深度分析综合层）
+# ════════════════════════════════════════════════════════════════════
+
+
+class ScenarioCase(_Strict):
+    """多场景预演单例。"""
+
+    name: Literal["base", "bullish", "bearish", "extreme"]
+    probability: float = Field(ge=0.0, le=1.0)
+    narrative: str = Field(max_length=300)
+    trigger: str = Field(max_length=160, description="触发条件白话")
+    actionable: str = Field(max_length=200, description="若该剧本兑现应如何应对")
+
+
+class DeepAnalyzeLayerOut(_Strict):
+    """Layer 4 · 深度分析输出。
+
+    把 L1/L2/L3 + 原始 input 全部喂回去，产出可以直接打印的"完整研报"。
+    schema 略宽：``report_md`` 允许 markdown，长度上限 12k 字符。
+    """
+
+    one_line: str = Field(max_length=80, description="一句话总结，给 hero / 列表")
+    report_md: str = Field(
+        min_length=200,
+        max_length=12000,
+        description="完整 markdown 报告，含分章节：判定 / 资金面 / 计划 / 风险 / 复盘",
+    )
+    key_takeaways: list[str] = Field(min_length=3, max_length=8)
+    risks: list[str] = Field(default_factory=list, max_length=6)
+    scenarios: list[ScenarioCase] = Field(default_factory=list, max_length=4)
+    confidence: float = Field(ge=0.0, le=1.0)
+
+
+# ════════════════════════════════════════════════════════════════════
+# AnalysisReport（落盘 + REST）
+# ════════════════════════════════════════════════════════════════════
+
+
+class AIRawPayloadDump(_Strict):
+    """单层 LLM 调用的 system / user / raw_response 三段原文。"""
+
+    layer: str
+    model: str
+    tokens_total: int = 0
+    latency_ms: int = 0
+    system_prompt: str = ""
+    user_prompt: str = ""
+    raw_response: str = ""
+
+
+class AnalysisReport(_Strict):
+    """一次深度分析产出（持久化 + REST 返回）。
+
+    设计：
+    - 与 ``AIObserverFeedItem`` 解耦：分析报告体积大、频次低、保留期长（ring 20）；
+    - ``raw_payloads`` 是图 5 的 "AI 交互过程原文" 数据源：每层一段；
+    - ``data_slice`` 是"纯指标数据"（剥掉规则/指令的 input JSON）—— 用户复制贴给其他 AI 做跨模型对照。
+    """
+
+    id: str                          # "20260425T024058-BTC-1h"
+    ts: int                          # ms
+    symbol: str
+    tf: str
+    model_tier: Literal["flash", "pro"] = "flash"
+    thinking_enabled: bool = False
+    status: Literal["ok", "error"] = "ok"
+    error_reason: str | None = None
+    total_tokens: int = 0
+    total_latency_ms: int = 0
+
+    one_line: str = ""
+    report_md: str = ""
+    raw_payloads: list[AIRawPayloadDump] = Field(default_factory=list)
+    data_slice: str = ""             # 纯 JSON 字符串（input.model_dump_json）
+
+
+class AnalysisReportSummary(_Strict):
+    """报告列表项：和 AnalysisReport 同形（去掉重型字段）。"""
+
+    id: str
+    ts: int
+    symbol: str
+    tf: str
+    model_tier: Literal["flash", "pro"] = "flash"
+    thinking_enabled: bool = False
+    status: Literal["ok", "error"] = "ok"
+    total_tokens: int = 0
+    total_latency_ms: int = 0
+    one_line: str = ""
 
 
 class AIObserverSummary(_Strict):

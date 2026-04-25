@@ -14,10 +14,11 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from backend.ai.analyzer import DeepAnalyzer
 from backend.ai.config import AIRuntimeConfig, build_from_rules
 from backend.ai.observer import AIObserver, ObserverSettings
 from backend.ai.providers import DeepSeekProvider, LLMProvider, StubProvider
-from backend.ai.storage import AIObservationStore
+from backend.ai.storage import AIObservationStore, AnalysisReportStore
 
 logger = logging.getLogger("ai.service")
 
@@ -48,6 +49,18 @@ class AIObservationService:
             provider=self._provider,
             store=self._store,
             settings=_to_observer_settings(self._cfg),
+        )
+        self._report_store = AnalysisReportStore(
+            ring_size=self._cfg.deep_ring_size,
+            jsonl_path=self._resolve_jsonl_path(self._cfg.deep_jsonl_relpath),
+        )
+        self._analyzer = DeepAnalyzer(
+            provider=self._provider,
+            report_store=self._report_store,
+            model_tier=self._cfg.model_tier,
+            thinking_enabled=self._cfg.thinking_enabled,
+            max_tokens_l4=self._cfg.deep_max_tokens,
+            timeout_s_l4=self._cfg.deep_timeout_s_l4,
         )
 
     # ── 构造辅助 ────────────────────────────────────────────
@@ -104,6 +117,14 @@ class AIObservationService:
         return self._store
 
     @property
+    def report_store(self) -> AnalysisReportStore:
+        return self._report_store
+
+    @property
+    def analyzer(self) -> DeepAnalyzer:
+        return self._analyzer
+
+    @property
     def provider(self) -> LLMProvider:
         return self._provider
 
@@ -114,11 +135,14 @@ class AIObservationService:
     # ── 生命周期 ────────────────────────────────────────────
 
     async def startup(self) -> None:
-        """启动时回灌 jsonl 最近 N 条。"""
+        """启动时回灌 jsonl 最近 N 条（observation + deep report 两份）。"""
         loaded = await self._store.load_tail_from_jsonl(limit=self._cfg.history_ring_size)
+        deep_loaded = await self._report_store.load_tail_from_jsonl(
+            limit=self._cfg.deep_ring_size
+        )
         logger.info(
             f"AI observer 启动 enabled={self._cfg.enabled} provider={self._cfg.provider} "
-            f"jsonl_loaded={loaded}",
+            f"jsonl_loaded={loaded} deep_jsonl_loaded={deep_loaded}",
             extra={"tags": ["AI"], "context": self._cfg.to_audit_dict()},
         )
 
@@ -141,6 +165,12 @@ class AIObservationService:
         self._provider = self._make_provider(new_cfg)
         self._observer._provider = self._provider  # 直接替换，避免重建 observer 丢历史
         self._observer._settings = _to_observer_settings(new_cfg)
+        # 同步 analyzer 的 provider + tier + thinking
+        self._analyzer._provider = self._provider
+        self._analyzer._tier = new_cfg.model_tier
+        self._analyzer._thinking = new_cfg.thinking_enabled
+        self._analyzer._max_l4 = new_cfg.deep_max_tokens
+        self._analyzer._t4 = new_cfg.deep_timeout_s_l4
         # store ring_size 和 jsonl path 可能变
         if (
             self._store.size() == 0
@@ -151,6 +181,17 @@ class AIObservationService:
                 jsonl_path=self._resolve_jsonl_path(new_cfg.jsonl_relpath),
             )
             self._observer._store = self._store
+        # report_store 也支持 path 改了重建（仅在 ring 为空时，避免丢内存历史）
+        if (
+            self._report_store.size() == 0
+            and self._resolve_jsonl_path(new_cfg.deep_jsonl_relpath)
+            != self._report_store._jsonl_path
+        ):
+            self._report_store = AnalysisReportStore(
+                ring_size=new_cfg.deep_ring_size,
+                jsonl_path=self._resolve_jsonl_path(new_cfg.deep_jsonl_relpath),
+            )
+            self._analyzer._store = self._report_store
         try:
             await old_provider.aclose()
         except Exception:  # noqa: BLE001

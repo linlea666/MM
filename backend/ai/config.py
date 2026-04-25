@@ -61,6 +61,12 @@ class AIRuntimeConfig:
     history_ring_size: int = 50
     jsonl_relpath: str = "data/ai_observations.jsonl"
 
+    # 深度分析（Layer 4 · DeepAnalyzer）
+    deep_ring_size: int = 20
+    deep_jsonl_relpath: str = "data/analysis_reports.jsonl"
+    deep_max_tokens: int = 4096
+    deep_timeout_s_l4: float = 90.0
+
     @property
     def api_key_masked(self) -> str:
         """生成 mask 显示用的 key（头 3 尾 4，中间 ****）。"""
@@ -87,6 +93,8 @@ class AIRuntimeConfig:
             "timeout_s_pro": self.timeout_s_pro,
             "history_ring_size": self.history_ring_size,
             "jsonl_relpath": self.jsonl_relpath,
+            "deep_ring_size": self.deep_ring_size,
+            "deep_jsonl_relpath": self.deep_jsonl_relpath,
         }
 
 
@@ -148,4 +156,10 @@ def build_from_rules(
         temperature_pro=float(observer_cfg.get("temperature_pro", 0.15)),
         history_ring_size=int(storage_cfg.get("history_ring_size", 50)),
         jsonl_relpath=str(storage_cfg.get("jsonl_relpath", "data/ai_observations.jsonl")),
+        deep_ring_size=int(storage_cfg.get("deep_ring_size", 20)),
+        deep_jsonl_relpath=str(
+            storage_cfg.get("deep_jsonl_relpath", "data/analysis_reports.jsonl")
+        ),
+        deep_max_tokens=int(observer_cfg.get("deep_max_tokens", 4096)),
+        deep_timeout_s_l4=float(observer_cfg.get("deep_timeout_s_l4", 90.0)),
     )

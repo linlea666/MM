@@ -8,6 +8,10 @@
     GET  /api/ai/observations/latest   最新一条 feed item + summary
     POST /api/ai/observations/run      强制触发一次观察（body: symbol, tf, force_trade_plan）
 
+    POST /api/ai/analyze               触发一次 4 层深度分析（耗时较长，~30~120s）
+    GET  /api/ai/reports               最近 N 份深度分析报告（仅摘要）
+    GET  /api/ai/reports/{report_id}   单份完整报告（含 4 层 raw_payloads + data_slice）
+
 所有响应里的 api_key 均以 mask 形态暴露；审计日志记录 provider/trigger 但不记录模型原文。
 """
 
@@ -57,6 +61,20 @@ class RunRequest(BaseModel):
         default=False,
         description="强制跑 Layer 3 交易计划（用 ai.model_tier 指定的同一模型）",
     )
+
+
+class AnalyzeRequest(BaseModel):
+    """触发深度分析请求。
+
+    - ``symbol`` 缺省时取首个 active 订阅；
+    - ``tf`` 默认 1h；
+    - 4 层串行 + 并行总耗时较大，建议前端 UI 走「按钮 + 进度提示」交互。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    symbol: str | None = Field(default=None, max_length=16)
+    tf: SupportedTf = Field(default=DEFAULT_TF)  # type: ignore[valid-type]
 
 
 # ─── 端点 ────────────────────────────────────────────────
@@ -202,3 +220,83 @@ async def run_observation(
         "item": item.model_dump(),
         "summary": build_summary(item).model_dump(),
     }
+
+
+# ─── 深度分析 ────────────────────────────────────────────
+
+
+@router.post("/analyze")
+async def run_deep_analyze(
+    payload: AnalyzeRequest,
+    request: Request,
+    svc: AIObservationService = Depends(_ai_service),
+    sub_repo: SubscriptionRepository = Depends(get_sub_repo),
+) -> dict[str, Any]:
+    """触发一次 4 层深度分析并立即返回完整报告。
+
+    - 不受 observer 节流约束；
+    - 与 ``/observations/run`` 走 **同一 provider + 同一 model_tier**；
+    - 失败时仍返回 ``status='error'`` 报告（前端可点进去看 raw_payloads 排查）。
+    """
+    if not svc.config.enabled:
+        raise HTTPException(status_code=400, detail="AI 未启用（ai.enabled=false）")
+
+    symbol = await resolve_active_symbol(payload.symbol, sub_repo)
+    runner = _runner(request)
+
+    try:
+        snap = await runner._ext.extract(symbol, payload.tf)
+    except NoDataError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    if snap is None:
+        raise HTTPException(
+            status_code=404, detail=f"{symbol}/{payload.tf} 无可用 FeatureSnapshot"
+        )
+
+    try:
+        report = await svc.analyzer.analyze(snap)
+    except Exception as e:  # noqa: BLE001
+        logger.exception(f"/api/ai/analyze 失败: {e}")
+        raise HTTPException(status_code=500, detail=f"AI 深度分析失败: {e}") from e
+
+    logger.info(
+        f"/api/ai/analyze ok symbol={symbol} tf={payload.tf} "
+        f"id={report.id} status={report.status} tokens={report.total_tokens} "
+        f"latency={report.total_latency_ms}ms",
+        extra={
+            "tags": [Tags.API, "AI"],
+            "context": {
+                "symbol": symbol,
+                "tf": payload.tf,
+                "id": report.id,
+                "status": report.status,
+            },
+        },
+    )
+    return {"report": report.model_dump()}
+
+
+@router.get("/reports")
+async def list_reports(
+    svc: AIObservationService = Depends(_ai_service),
+    limit: int = Query(default=10, ge=1, le=100),
+) -> dict[str, Any]:
+    """列出最近 N 份深度分析报告（按时间倒序，仅摘要）。"""
+    items = await svc.report_store.list_summaries(limit=limit)
+    return {
+        "items": [it.model_dump() for it in items],
+        "size": svc.report_store.size(),
+        "limit": limit,
+    }
+
+
+@router.get("/reports/{report_id}")
+async def get_report(
+    report_id: str,
+    svc: AIObservationService = Depends(_ai_service),
+) -> dict[str, Any]:
+    """单份完整报告（含 4 层 raw_payloads + data_slice）。"""
+    report = await svc.report_store.get(report_id)
+    if report is None:
+        raise HTTPException(status_code=404, detail=f"未找到报告 {report_id}")
+    return {"report": report.model_dump()}

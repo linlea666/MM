@@ -16,7 +16,11 @@ import logging
 from collections import deque
 from pathlib import Path
 
-from backend.ai.schemas import AIObserverFeedItem
+from backend.ai.schemas import (
+    AIObserverFeedItem,
+    AnalysisReport,
+    AnalysisReportSummary,
+)
 
 logger = logging.getLogger("ai.storage")
 
@@ -110,6 +114,136 @@ class AIObservationStore:
                     continue
         logger.info(
             f"AI observation ring 已回灌 {loaded} 条",
+            extra={"tags": ["AI"], "context": {"path": str(self._jsonl_path)}},
+        )
+        return loaded
+
+
+class AnalysisReportStore:
+    """V1.1 · 深度分析报告存储。
+
+    与 ``AIObservationStore`` 解耦：
+    - **ring 默认 20**（深度报告体积大、频次低）；
+    - **JSONL 独立文件**（``analysis_reports.jsonl``）；
+    - 单条体积可达 ~200KB（含三层 raw_payloads）。
+    """
+
+    def __init__(self, *, ring_size: int = 20, jsonl_path: Path | None = None) -> None:
+        self._ring: deque[AnalysisReport] = deque(maxlen=max(1, ring_size))
+        self._jsonl_path = jsonl_path
+        self._lock = asyncio.Lock()
+        if self._jsonl_path is not None:
+            self._jsonl_path.parent.mkdir(parents=True, exist_ok=True)
+
+    async def append(self, report: AnalysisReport) -> None:
+        async with self._lock:
+            self._ring.append(report)
+            if self._jsonl_path is not None:
+                try:
+                    line = report.model_dump_json()
+                    await asyncio.to_thread(self._write_line_sync, line)
+                except OSError as e:
+                    logger.warning(
+                        f"analysis_reports.jsonl 写入失败: {e}",
+                        extra={"tags": ["AI"], "context": {"path": str(self._jsonl_path)}},
+                    )
+
+    def _write_line_sync(self, line: str) -> None:
+        assert self._jsonl_path is not None
+        with self._jsonl_path.open("a", encoding="utf-8") as f:
+            f.write(line + "\n")
+
+    async def get(self, report_id: str) -> AnalysisReport | None:
+        """先查内存 ring，没有再扫 JSONL（O(N) 全量扫；N≤数千可接受）。"""
+        async with self._lock:
+            for r in reversed(self._ring):
+                if r.id == report_id:
+                    return r
+        # 内存里没找到 → 扫 jsonl
+        if self._jsonl_path is None or not self._jsonl_path.exists():
+            return None
+
+        def _scan() -> AnalysisReport | None:
+            try:
+                with self._jsonl_path.open("r", encoding="utf-8") as f:
+                    for ln in f:
+                        ln = ln.strip()
+                        if not ln:
+                            continue
+                        # 用 substring pre-filter 加速：只在 id 命中时才 json.loads
+                        if report_id not in ln:
+                            continue
+                        try:
+                            data = json.loads(ln)
+                        except json.JSONDecodeError:
+                            continue
+                        if data.get("id") == report_id:
+                            try:
+                                return AnalysisReport.model_validate(data)
+                            except ValueError:
+                                return None
+            except OSError as e:
+                logger.warning(f"analysis_reports.jsonl 读取失败: {e}", extra={"tags": ["AI"]})
+            return None
+
+        return await asyncio.to_thread(_scan)
+
+    async def list_summaries(self, *, limit: int = 10) -> list[AnalysisReportSummary]:
+        """返回最近 N 条报告的摘要（去掉重型字段）。"""
+        async with self._lock:
+            tail = list(self._ring)[-max(1, limit):]
+        # 新到旧，方便前端直接按时间倒序展示
+        tail.reverse()
+        return [
+            AnalysisReportSummary(
+                id=r.id,
+                ts=r.ts,
+                symbol=r.symbol,
+                tf=r.tf,
+                model_tier=r.model_tier,
+                thinking_enabled=r.thinking_enabled,
+                status=r.status,
+                total_tokens=r.total_tokens,
+                total_latency_ms=r.total_latency_ms,
+                one_line=r.one_line,
+            )
+            for r in tail
+        ]
+
+    def size(self) -> int:
+        return len(self._ring)
+
+    async def load_tail_from_jsonl(self, *, limit: int = 20) -> int:
+        """进程启动时回灌最近 ``limit`` 条到 ring。"""
+        if self._jsonl_path is None or not self._jsonl_path.exists():
+            return 0
+
+        def _read_tail() -> list[str]:
+            try:
+                with self._jsonl_path.open("r", encoding="utf-8") as f:
+                    lines = f.readlines()
+            except OSError as e:
+                logger.warning(f"读取 analysis_reports.jsonl 失败: {e}", extra={"tags": ["AI"]})
+                return []
+            return [ln.strip() for ln in lines if ln.strip()]
+
+        lines = await asyncio.to_thread(_read_tail)
+        if not lines:
+            return 0
+        tail = lines[-limit:]
+        async with self._lock:
+            loaded = 0
+            for ln in tail:
+                try:
+                    data = json.loads(ln)
+                    report = AnalysisReport.model_validate(data)
+                    self._ring.append(report)
+                    loaded += 1
+                except (json.JSONDecodeError, ValueError) as e:
+                    logger.debug(f"跳过损坏行: {e}", extra={"tags": ["AI"]})
+                    continue
+        logger.info(
+            f"AnalysisReport ring 已回灌 {loaded} 条",
             extra={"tags": ["AI"], "context": {"path": str(self._jsonl_path)}},
         )
         return loaded

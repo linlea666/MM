@@ -29,7 +29,7 @@ import asyncio
 import copy
 import logging
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from .config import Settings
@@ -46,14 +46,20 @@ logger = logging.getLogger("core.rules_config")
 
 @dataclass
 class ConfigChangeEvent:
-    """单次变更事件，给订阅者用（WS 广播 / 规则引擎刷新）。"""
+    """单次变更事件，给订阅者用（WS 广播 / 规则引擎刷新）。
+
+    V1.1 · 批量去抖：``set_many`` 一次写多个 key 时，**只派发一个** ``kind="set_batch"`` 事件，
+    具体改动 keys 放在 ``batch_keys`` 里。监听者（如 AI observer reload / RuleRunner 热更新）
+    据此只 reload 一次。``key/old_value/new_value`` 三个字段在批量场景下保留首项以兼容旧消费者。
+    """
 
     key: str
     old_value: Any
     new_value: Any
     updated_by: str
     reason: str | None
-    kind: str  # "set" | "delete" | "reset_all"
+    kind: str  # "set" | "delete" | "reset_all" | "set_batch"
+    batch_keys: list[str] = field(default_factory=list)
 
 
 ChangeListener = Callable[[ConfigChangeEvent], Awaitable[None]]
@@ -300,8 +306,24 @@ class RulesConfigService:
                 )
             self._merged = _deep_merge(self._defaults, self._overrides)
 
-        for ev in events:
-            await self._dispatch(ev)
+        # V1.1 · reload 去抖：set_many 批量只派发 1 次。
+        # - len(events) == 1 时仍走单事件（kind="set"）保持向后兼容；
+        # - 多事件时合并为 kind="set_batch"，监听者据此只 reload 一次。
+        if len(events) == 1:
+            await self._dispatch(events[0])
+        elif events:
+            first = events[0]
+            await self._dispatch(
+                ConfigChangeEvent(
+                    key=first.key,
+                    old_value=first.old_value,
+                    new_value=first.new_value,
+                    updated_by=updated_by,
+                    reason=reason,
+                    kind="set_batch",
+                    batch_keys=[e.key for e in events],
+                )
+            )
         return normalized
 
     async def reset(

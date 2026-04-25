@@ -11,6 +11,7 @@
 from .ai_router import router as ai_router
 from .config_router import router as config_router
 from .dashboard import router as dashboard_router
+from .indicators_router import router as indicators_router
 from .logs_router import router as logs_router
 from .subscriptions import router as subscriptions_router
 from .system import router as system_router
@@ -20,6 +21,7 @@ __all__ = [
     "ai_router",
     "config_router",
     "dashboard_router",
+    "indicators_router",
     "logs_router",
     "subscriptions_router",
     "system_router",

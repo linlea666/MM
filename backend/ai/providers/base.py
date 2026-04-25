@@ -39,6 +39,11 @@ class LLMResponse:
     - ``text`` 永远是原始字符串（便于审计）；
     - ``parsed`` 是按 schema 解析后的 Pydantic 对象（失败则抛 ParseError）；
     - ``usage`` 字段来自 provider（OpenAI 兼容里是 usage.prompt_tokens 等）。
+    - ``system_prompt`` / ``user_prompt`` 是本次请求实际发出的 system / user 内容；
+      用于"AI 交互过程原文"展示与跨模型对照（图 5）。
+      注意：仅保留首条 system 与最后一条 user（绝大多数 prompt 走这个范式）；
+      如果调用方传入了多轮对话，``system_prompt`` 会拼接所有 system，
+      ``user_prompt`` 取最后一条 user。
     """
 
     text: str
@@ -46,6 +51,8 @@ class LLMResponse:
     usage: dict[str, int] = field(default_factory=dict)
     latency_ms: int = 0
     model: str = ""
+    system_prompt: str = ""
+    user_prompt: str = ""
 
 
 class LLMProvider(ABC):

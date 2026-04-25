@@ -73,12 +73,16 @@ class StubProvider(LLMProvider):
                 f"StubProvider fixture 类型错误：期望 {schema.__name__}，实际 {type(parsed).__name__}",
             )
 
+        sys_segs = [m.get("content", "") for m in messages if m.get("role") == "system"]
+        user_segs = [m.get("content", "") for m in messages if m.get("role") == "user"]
         return LLMResponse(
             text=parsed.model_dump_json(),
             parsed=parsed,
             usage={"prompt_tokens": 800, "completion_tokens": 300, "total_tokens": 1100},
             latency_ms=0,
             model=model,
+            system_prompt="\n\n---\n\n".join(s for s in sys_segs if s),
+            user_prompt=user_segs[-1] if user_segs else "",
         )
 
     async def ping(self) -> bool:

@@ -1,11 +1,21 @@
 import { Link, NavLink } from "react-router-dom";
-import { Activity, List, Settings, Terminal, Radar } from "lucide-react";
+import {
+  Activity,
+  Brain,
+  Gauge,
+  List,
+  Settings,
+  Terminal,
+  Radar,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { SymbolSwitcher } from "./symbol-switcher";
 import { SystemHealthBadge } from "./system-health-badge";
 
 const TABS = [
   { to: "/", label: "作战大屏", icon: Radar, end: true },
+  { to: "/indicators", label: "指标全景", icon: Gauge },
+  { to: "/analysis", label: "AI 分析", icon: Brain },
   { to: "/subscriptions", label: "订阅管理", icon: List },
   { to: "/config", label: "规则配置", icon: Settings },
   { to: "/logs", label: "日志面板", icon: Terminal },

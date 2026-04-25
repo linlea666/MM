@@ -251,3 +251,101 @@ export async function runAIObservation(
   );
   return r.data;
 }
+
+// ─── Indicators 全景 ──────────────────────────────
+
+/**
+ * 指标全景：直接返回 ``FeatureSnapshot.model_dump()``，体积较大。
+ * 前端用 ``Record<string, unknown>`` 接住，按分类映射表渲染。
+ */
+export type IndicatorsPanorama = Record<string, unknown>;
+
+export async function fetchIndicatorsPanorama(
+  symbol: string,
+  tf: string,
+): Promise<IndicatorsPanorama> {
+  const r = await http.get<IndicatorsPanorama>("/api/indicators", {
+    params: { symbol, tf },
+  });
+  return r.data;
+}
+
+// ─── AI 深度分析报告 ──────────────────────────────
+
+export interface AIRawPayload {
+  layer: string;            // "trend" | "money_flow" | "trade_plan" | "deep_analyze"
+  system_prompt: string;
+  user_prompt: string;
+  raw_response: string;
+  model: string;
+  tokens_total: number;
+  latency_ms: number;
+}
+
+export interface AIAnalysisReport {
+  id: string;                  // 形如 "20260425T024058-BTC-1h"
+  ts: number;                  // ms
+  symbol: string;
+  tf: string;
+  model_tier: "flash" | "pro";
+  thinking_enabled: boolean;
+  status: "ok" | "error";
+  error_reason?: string | null;
+  total_tokens: number;
+  total_latency_ms: number;
+  // 一句话摘要（hero 用）
+  one_line: string;
+  // markdown 完整报告（含分章节：判定 / 资金面 / 计划 / 风险 / 复盘）
+  report_md: string;
+  // 每层 raw 三段（system / user / raw_response）
+  raw_payloads: AIRawPayload[];
+  // 跨模型对照"纯数据切片"：剥掉规则/指令的纯指标 JSON 字符串，便于复制给其他 AI
+  data_slice: string;
+}
+
+export interface AIReportsListItem {
+  id: string;
+  ts: number;
+  symbol: string;
+  tf: string;
+  model_tier: "flash" | "pro";
+  thinking_enabled: boolean;
+  status: "ok" | "error";
+  total_tokens: number;
+  total_latency_ms: number;
+  one_line: string;
+}
+
+export interface AIReportsListResp {
+  items: AIReportsListItem[];
+  size: number;
+  limit: number;
+}
+
+export interface AIAnalyzeReq {
+  symbol?: string;
+  tf?: string;
+}
+
+export async function fetchAIReports(limit = 10): Promise<AIReportsListResp> {
+  const r = await http.get<AIReportsListResp>("/api/ai/reports", {
+    params: { limit },
+  });
+  return r.data;
+}
+
+export async function fetchAIReport(id: string): Promise<AIAnalysisReport> {
+  const r = await http.get<{ report: AIAnalysisReport }>(`/api/ai/reports/${id}`);
+  return r.data.report;
+}
+
+export async function runAIAnalyze(
+  body: AIAnalyzeReq,
+): Promise<AIAnalysisReport> {
+  const r = await http.post<{ report: AIAnalysisReport }>(
+    "/api/ai/analyze",
+    body,
+    { timeout: 180_000 }, // 深度分析允许 3 分钟（pro+thinking 兜底）
+  );
+  return r.data.report;
+}
