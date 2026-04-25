@@ -101,47 +101,64 @@ def _onepass_to_markdown(out: OnePassReport) -> str:
 
 _PRICE_RE = re.compile(r"`?([0-9]{2,3}(?:,[0-9]{3})+(?:\.[0-9]+)?|[0-9]{4,6}(?:\.[0-9]+)?)`?")
 
+# `78,759`（trailing_vwap_last.resistance）/ 78,759 (source=...) / 78,759（cascade_bands long_fuel）
+_PRICED_SOURCE_RE = re.compile(
+    r"`?([0-9]{2,3}(?:,[0-9]{3})+(?:\.[0-9]+)?|[0-9]{4,6}(?:\.[0-9]+)?)`?"
+    r"\s*[（(]\s*"
+    r"(?:source\s*[:=]\s*)?"
+    r"([^（）()\n]{2,80}?)"
+    r"\s*[）)]"
+)
+_TOKEN_SPLIT_RE = re.compile(r"[._]+")
 
-def _collect_source_prices(snapshot: dict) -> set[float]:
-    """从 FeatureSnapshot dict 收集可追溯价位白名单。"""
-    prices: set[float] = set()
 
-    def add(v: object) -> None:
+def _collect_source_prices_by_field(snapshot: dict) -> dict[str, set[float]]:
+    """按字段路径分桶收集价位（用于 (price, source) 双绑定审计）。
+
+    键名是规范化的 dot.path（不含 ``[]`` 下标），同时为每个字段维护一个粗粒度桶
+    （如 ``cascade_bands`` 包含所有 ``avg/top/bottom_price`` × ``side``），
+    以便 AI 用简短标注（``cascade_bands``）也能命中。
+    """
+    buckets: dict[str, set[float]] = {}
+
+    def add(key: str, v: object) -> None:
         if isinstance(v, (int, float)):
             fv = float(v)
             if fv > 0:
-                prices.add(fv)
+                buckets.setdefault(key, set()).add(fv)
 
-    # 基础
-    add(snapshot.get("last_price"))
-    add(snapshot.get("vwap_last"))
-    add(snapshot.get("nearest_support_price"))
-    add(snapshot.get("nearest_resistance_price"))
+    add("last_price", snapshot.get("last_price"))
+    add("vwap_last", snapshot.get("vwap_last"))
+    add("nearest_support_price", snapshot.get("nearest_support_price"))
+    add("nearest_resistance_price", snapshot.get("nearest_resistance_price"))
 
-    # trailing vwap
-    tv = snapshot.get("trailing_vwap_last")
-    if isinstance(tv, dict):
-        add(tv.get("support"))
-        add(tv.get("resistance"))
+    nested_objects: tuple[tuple[str, tuple[str, ...]], ...] = (
+        ("trailing_vwap_last", ("support", "resistance")),
+        ("micro_poc_last", ("poc_price",)),
+        ("smart_money_ongoing", ("avg_price",)),
+        ("trend_purity_last", ("avg_price",)),
+    )
+    for parent, sub_keys in nested_objects:
+        node = snapshot.get(parent)
+        if not isinstance(node, dict):
+            continue
+        for sk in sub_keys:
+            v = node.get(sk)
+            add(f"{parent}.{sk}", v)
+            add(parent, v)
 
-    # micro poc
-    mp = snapshot.get("micro_poc_last")
-    if isinstance(mp, dict):
-        add(mp.get("poc_price"))
-
-    # volume profile
     vp = snapshot.get("volume_profile")
     if isinstance(vp, dict):
-        add(vp.get("poc_price"))
-        add(vp.get("value_area_low"))
-        add(vp.get("value_area_high"))
-        top_nodes = vp.get("top_nodes")
-        if isinstance(top_nodes, list):
-            for n in top_nodes:
-                if isinstance(n, dict):
-                    add(n.get("price"))
+        for k in ("poc_price", "value_area_low", "value_area_high"):
+            v = vp.get(k)
+            add(f"volume_profile.{k}", v)
+            add("volume_profile", v)
+        for n in vp.get("top_nodes") or []:
+            if isinstance(n, dict):
+                v = n.get("price")
+                add("volume_profile.top_nodes", v)
+                add("volume_profile", v)
 
-    # segment portrait
     sp = snapshot.get("segment_portrait")
     if isinstance(sp, dict):
         for k in (
@@ -152,10 +169,11 @@ def _collect_source_prices(snapshot: dict) -> set[float]:
             "pain_max_price",
             "dd_trailing_current",
         ):
-            add(sp.get(k))
+            v = sp.get(k)
+            add(f"segment_portrait.{k}", v)
+            add("segment_portrait", v)
 
-    # list-like price carriers
-    for field, keys in (
+    list_fields: tuple[tuple[str, tuple[str, ...]], ...] = (
         ("hvn_nodes", ("price",)),
         ("order_blocks", ("avg_price",)),
         ("absolute_zones", ("bottom_price", "top_price")),
@@ -164,15 +182,74 @@ def _collect_source_prices(snapshot: dict) -> set[float]:
         ("heatmap", ("price",)),
         ("vacuums", ("low", "high")),
         ("liquidation_fuel", ("bottom", "top")),
-    ):
+    )
+    for field, keys in list_fields:
         arr = snapshot.get(field)
-        if isinstance(arr, list):
-            for item in arr:
-                if isinstance(item, dict):
-                    for k in keys:
-                        add(item.get(k))
+        if not isinstance(arr, list):
+            continue
+        for item in arr:
+            if not isinstance(item, dict):
+                continue
+            raw_side = item.get("side")
+            side = raw_side.lower() if isinstance(raw_side, str) and raw_side else None
+            for k in keys:
+                v = item.get(k)
+                add(field, v)
+                add(f"{field}.{k}", v)
+                if side:
+                    add(f"{field}.{side}", v)
+                    add(f"{field}.{side}.{k}", v)
 
+    return buckets
+
+
+def _collect_source_prices(snapshot: dict) -> set[float]:
+    """全局可追溯价位白名单（保留旧接口；由 by_field 桶 union 得到）。"""
+    prices: set[float] = set()
+    for s in _collect_source_prices_by_field(snapshot).values():
+        prices.update(s)
     return prices
+
+
+def _normalize_source_token(s: str) -> str:
+    """规范化 AI 写的来源标注，便于对齐 buckets 的 key。"""
+    s = s.strip().strip("`*\"' ")
+    s = re.sub(r"[（(]", ".", s)
+    s = re.sub(r"[）)]", "", s)
+    s = re.sub(r"[·:：\-→/，,;；\s]+", ".", s)
+    s = re.sub(r"\.+", ".", s)
+    return s.strip(".").lower()
+
+
+def _resolve_source_prices(
+    buckets: dict[str, set[float]], source: str
+) -> set[float] | None:
+    """根据来源标注解析其对应的字段价位集合；解析失败返回 ``None``（保守跳过）。"""
+    if not source:
+        return None
+    norm = _normalize_source_token(source)
+    if not norm:
+        return None
+
+    if norm in buckets:
+        return buckets[norm]
+
+    matches = [k for k in buckets if k.startswith(norm) or norm.startswith(k)]
+    if matches:
+        matches.sort(key=len, reverse=True)
+        return buckets[matches[0]]
+
+    tokens = [t for t in _TOKEN_SPLIT_RE.split(norm) if t]
+    if not tokens:
+        return None
+    pooled: set[float] = set()
+    matched = 0
+    for k, vs in buckets.items():
+        kt = _TOKEN_SPLIT_RE.split(k)
+        if any(t in kt for t in tokens):
+            pooled.update(vs)
+            matched += 1
+    return pooled if matched > 0 else None
 
 
 def _extract_report_prices(text: str, *, last_price: float | None) -> set[float]:
@@ -184,22 +261,60 @@ def _extract_report_prices(text: str, *, last_price: float | None) -> set[float]
             v = float(raw)
         except ValueError:
             continue
-        # 过滤明显非价位数字（时间戳/年份/小整数等）
         if v < 1000:
             continue
         if last_price and last_price > 0:
-            # 保留合理价格域，避免把时间戳误识别成价位
             if not (last_price * 0.35 <= v <= last_price * 3.5):
                 continue
         out.add(v)
     return out
 
 
+def _extract_priced_sources(
+    text: str, *, last_price: float | None
+) -> list[tuple[float, str]]:
+    """提取 (价位, 来源标注) 对，用于双绑定校验。
+
+    仅取来源**含字母**的条目，避免把 ``(下方 +1.2%)`` 这种纯比例标注误判成 source。
+    """
+    out: list[tuple[float, str]] = []
+    for m in _PRICED_SOURCE_RE.finditer(text):
+        try:
+            v = float(m.group(1).replace(",", ""))
+        except ValueError:
+            continue
+        if v < 1000:
+            continue
+        if last_price and last_price > 0:
+            if not (last_price * 0.35 <= v <= last_price * 3.5):
+                continue
+        src = (m.group(2) or "").strip()
+        if not src or not re.search(r"[A-Za-z_]", src):
+            continue
+        out.append((v, src))
+    return out
+
+
+def _is_round_thousand(v: float) -> bool:
+    """末三位为 0 → 典型「整千估算价」，需要更严苛的容差。"""
+    if v < 1000:
+        return False
+    return abs(v - round(v / 1000) * 1000) < 0.5
+
+
 def _is_price_traced(v: float, candidates: set[float]) -> bool:
-    """是否可在来源白名单中匹配（允许四舍五入/轻微偏差）。"""
+    """是否可在来源价位集合中匹配。
+
+    - 普通价位：容差 ``max(10, c * 0.001)``（0.1% 或 10 美元，兼容四舍五入与字符串格式化）；
+    - 整千估算（末三位 000）：收紧到 ``max(5, c * 0.0005)``，
+      防止 ``78,000`` 借邻近 ``77,850`` 蒙混过关。
+    """
+    is_round = _is_round_thousand(v)
     for c in candidates:
-        # 允许 0.35% 或 30 美元（取大），兼容格式化与轻微四舍五入
-        tol = max(30.0, c * 0.0035)
+        if is_round:
+            tol = max(5.0, c * 0.0005)
+        else:
+            tol = max(10.0, c * 0.001)
         if abs(v - c) <= tol:
             return True
     return False
@@ -208,7 +323,13 @@ def _is_price_traced(v: float, candidates: set[float]) -> bool:
 def _audit_report_price_sources(
     out: OnePassReport, *, snapshot_json: str
 ) -> tuple[OnePassReport, int, list[float]]:
-    """审计报告价位来源；返回（out, 未追溯数量, 未追溯样本价位）。"""
+    """审计报告价位来源；返回 ``(out, 未追溯数量, 未追溯样本价位)``。
+
+    审计两层：
+      1. **(price, source) 双绑定**：报告里以 ``价位（field.path）`` 形式标注的，
+         必须能在 ``field.path`` 对应的字段桶里找到该价位；找不到即视为来源伪造。
+      2. **全局白名单兜底**：未带来源标注的价位，落到全字段 union 白名单里检查。
+    """
     try:
         snap = json.loads(snapshot_json)
     except Exception:  # noqa: BLE001
@@ -217,37 +338,67 @@ def _audit_report_price_sources(
         return out, 0, []
 
     last_price = snap.get("last_price")
-    last_price_num = float(last_price) if isinstance(last_price, (int, float)) else None
-    source_prices = _collect_source_prices(snap)
-    if not source_prices:
+    last_price_num = (
+        float(last_price) if isinstance(last_price, (int, float)) else None
+    )
+
+    buckets = _collect_source_prices_by_field(snap)
+    if not buckets:
         return out, 0, []
+    all_prices: set[float] = set()
+    for s in buckets.values():
+        all_prices.update(s)
 
     text_pool = "\n".join(
         [out.one_line, *out.key_takeaways, *out.key_risks, *out.next_focus, out.report_md]
     )
+    priced_sources = _extract_priced_sources(text_pool, last_price=last_price_num)
     used_prices = _extract_report_prices(text_pool, last_price=last_price_num)
-    if not used_prices:
+
+    audited_pairs: set[float] = set()
+    unknown: list[float] = []
+
+    for v, src in priced_sources:
+        audited_pairs.add(v)
+        cand = _resolve_source_prices(buckets, src)
+        if cand is None:
+            if not _is_price_traced(v, all_prices):
+                unknown.append(v)
+            continue
+        if not _is_price_traced(v, cand):
+            unknown.append(v)
+
+    for v in used_prices:
+        if v in audited_pairs:
+            continue
+        if not _is_price_traced(v, all_prices):
+            unknown.append(v)
+
+    seen: set[float] = set()
+    unknown_dedup: list[float] = []
+    for p in sorted(unknown):
+        if p in seen:
+            continue
+        seen.add(p)
+        unknown_dedup.append(p)
+
+    if not unknown_dedup:
         return out, 0, []
 
-    unknown = sorted(p for p in used_prices if not _is_price_traced(p, source_prices))
-    if not unknown:
-        return out, 0, []
-
-    # 置信度下调：每个未知价位 -0.02，最多 -0.15
-    penalty = min(0.15, 0.02 * len(unknown))
+    penalty = min(0.15, 0.02 * len(unknown_dedup))
     out.confidence = max(0.0, out.confidence - penalty)
 
-    unknown_str = ", ".join(f"`{p:,.0f}`" for p in unknown[:8])
+    unknown_str = ", ".join(f"`{p:,.0f}`" for p in unknown_dedup[:8])
     tail = ""
-    if len(unknown) > 8:
-        tail = f" 等 {len(unknown)} 个价位"
+    if len(unknown_dedup) > 8:
+        tail = f" 等 {len(unknown_dedup)} 个价位"
     audit_note = (
         "\n\n## 价位来源审计\n"
         f"- ⚠️ 检测到不可追溯价位：{unknown_str}{tail}。\n"
         "- 已按规则自动降级 confidence，并建议仅使用可在 input 追溯的价位执行。"
     )
     out.report_md = (out.report_md or "").rstrip() + audit_note
-    return out, len(unknown), unknown[:8]
+    return out, len(unknown_dedup), unknown_dedup[:8]
 
 
 class OnePassAnalyzer:

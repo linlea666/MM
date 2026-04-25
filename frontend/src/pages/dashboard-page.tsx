@@ -11,7 +11,6 @@ import {
   PhaseCompact,
   LiquidityCompact,
 } from "@/components/dashboard/compact-cards";
-import { AIObservationCard } from "@/components/dashboard/ai-observation-card";
 import { ChochCard } from "@/components/dashboard/choch-card";
 import { LiquidationBandsCard } from "@/components/dashboard/liquidation-bands-card";
 import { RetailBandsCard } from "@/components/dashboard/retail-bands-card";
@@ -54,9 +53,6 @@ export default function DashboardPage() {
     <div className="grid gap-4">
       {/* 行 1：结论带（实时价 + 一句话结论 + 策略建议） */}
       <HeroVerdict snap={snap} />
-
-      {/* 行 1.5：V1.1 · Phase 9 · AI 观察卡（未启用时显示引导；启用后随 snapshot 刷新） */}
-      <AIObservationCard summary={snap.ai ?? null} symbol={symbol} tf={tf} />
 
       {/* 数据不新鲜提醒 */}
       {!snap.health.fresh && (
