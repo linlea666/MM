@@ -34,6 +34,7 @@ function fmtAge(ms: number): string {
 
 function ReportLine({ item }: { item: AIReportsListItem }) {
   const isErr = item.status === "error";
+  const hasPriceAuditRisk = (item.unknown_price_count ?? 0) > 0;
   return (
     <Link
       to={`/analysis/${item.id}`}
@@ -50,6 +51,11 @@ function ReportLine({ item }: { item: AIReportsListItem }) {
         >
           {isErr ? "失败" : "OK"}
         </Badge>
+        {hasPriceAuditRisk && (
+          <Badge variant="warning" className="text-[9px] px-1 py-0">
+            审计风险
+          </Badge>
+        )}
       </div>
       <div className="flex-1 min-w-0">
         <div

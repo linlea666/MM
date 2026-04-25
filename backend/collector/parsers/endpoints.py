@@ -284,6 +284,9 @@ def parse_trend_purity(symbol: str, tf: str, payload: dict) -> ParserResult:
     """
     result = ParserResult()
     out: list = []
+    # 告警聚合（降噪）：同一批 payload 内逐行修复只记一次汇总 warning，避免日志风暴。
+    fixed_count = 0
+    fixed_samples: list[dict[str, Any]] = []
     for row in _safe_list(payload, "trend_purity"):
         if not isinstance(row, dict):
             continue
@@ -294,21 +297,17 @@ def parse_trend_purity(symbol: str, tf: str, payload: dict) -> ParserResult:
             raw_total = row.get("total_vol")
             total_v = float(raw_total) if raw_total is not None else sum_v
             if total_v + 1e-6 < sum_v:
-                logger.warning(
-                    "trend_purity.total_vol 上游错填",
-                    extra={
-                        "tags": ["PARSER", "DATA_AUDIT"],
-                        "context": {
-                            "symbol": symbol,
-                            "tf": tf,
+                fixed_count += 1
+                if len(fixed_samples) < 3:
+                    fixed_samples.append(
+                        {
                             "start_time": row.get("start_time"),
                             "buy_vol": buy_v,
                             "sell_vol": sell_v,
                             "raw_total_vol": raw_total,
                             "fixed_total_vol": sum_v,
-                        },
-                    },
-                )
+                        }
+                    )
                 total_v = sum_v
             out.append(
                 TrendPuritySegment(
@@ -327,6 +326,19 @@ def parse_trend_purity(symbol: str, tf: str, payload: dict) -> ParserResult:
         except (KeyError, TypeError, ValueError) as e:
             _skip("trend_purity", symbol, "trend_purity", "row_invalid", e)
     result.add("trend_purity", out)
+    if fixed_count > 0:
+        logger.warning(
+            "trend_purity.total_vol 上游错填（批次聚合）",
+            extra={
+                "tags": ["PARSER", "DATA_AUDIT"],
+                "context": {
+                    "symbol": symbol,
+                    "tf": tf,
+                    "fixed_count": fixed_count,
+                    "sample_rows": fixed_samples,
+                },
+            },
+        )
     return result
 
 

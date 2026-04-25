@@ -341,6 +341,8 @@ class AnalysisReport(_Strict):
     error_reason: str | None = None
     total_tokens: int = 0
     total_latency_ms: int = 0
+    unknown_price_count: int = 0
+    unknown_price_samples: list[float] = Field(default_factory=list, max_length=8)
 
     one_line: str = ""
     report_md: str = ""
@@ -360,6 +362,7 @@ class AnalysisReportSummary(_Strict):
     status: Literal["ok", "error"] = "ok"
     total_tokens: int = 0
     total_latency_ms: int = 0
+    unknown_price_count: int = 0
     one_line: str = ""
 
 

@@ -205,6 +205,7 @@ class AnalysisReportStore:
                 status=r.status,
                 total_tokens=r.total_tokens,
                 total_latency_ms=r.total_latency_ms,
+                unknown_price_count=r.unknown_price_count,
                 one_line=r.one_line,
             )
             for r in tail

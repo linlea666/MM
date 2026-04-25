@@ -143,6 +143,7 @@ const LAYER_ORDER = ["onepass", "trend", "money_flow", "trade_plan", "deep_analy
 
 export default function AnalysisReportPage() {
   const { reportId } = useParams<{ reportId: string }>();
+  const [showPriceAuditSamples, setShowPriceAuditSamples] = useState(false);
 
   const q = useQuery({
     queryKey: ["ai-report", reportId],
@@ -198,6 +199,7 @@ export default function AnalysisReportPage() {
 
   const r = q.data;
   const isErr = r.status === "error";
+  const hasPriceAuditRisk = (r.unknown_price_count ?? 0) > 0;
 
   // V1.2 起仅有 onepass 一段；V1.1 老报告会有 4 段
   const orderedPayloads: AIRawPayload[] = LAYER_ORDER
@@ -240,6 +242,18 @@ export default function AnalysisReportPage() {
               <Badge variant={isErr ? "destructive" : "outline"} className="text-[10px]">
                 {isErr ? "失败" : "成功"}
               </Badge>
+              {hasPriceAuditRisk && (
+                <button
+                  type="button"
+                  onClick={() => setShowPriceAuditSamples((v) => !v)}
+                  className="inline-flex"
+                  title="查看不可追溯价位样本"
+                >
+                  <Badge variant="warning" className="text-[10px]">
+                    价位审计风险 {r.unknown_price_count} {showPriceAuditSamples ? "收起" : "展开"}
+                  </Badge>
+                </button>
+              )}
             </div>
             <h1
               className={cn(
@@ -261,11 +275,28 @@ export default function AnalysisReportPage() {
               延迟{" "}
               <span className="text-foreground">{(r.total_latency_ms / 1000).toFixed(1)}s</span>
             </div>
+            {hasPriceAuditRisk && (
+              <div className="text-amber-400">
+                不可追溯价位 {r.unknown_price_count} 条
+              </div>
+            )}
           </div>
         </div>
         {isErr && r.error_reason && (
           <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-xs text-destructive whitespace-pre-wrap">
             {r.error_reason}
+          </div>
+        )}
+        {hasPriceAuditRisk && showPriceAuditSamples && (
+          <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs">
+            <div className="font-medium text-amber-300">不可追溯价位样本（前 {Math.min(3, r.unknown_price_samples?.length ?? 0)} 条）</div>
+            <div className="mt-1 flex flex-wrap gap-1.5 text-amber-100">
+              {(r.unknown_price_samples ?? []).slice(0, 3).map((p, i) => (
+                <span key={`${p}-${i}`} className="rounded border border-amber-400/30 bg-amber-500/10 px-1.5 py-0.5 font-mono">
+                  {p.toLocaleString("en-US", { maximumFractionDigits: 2 })}
+                </span>
+              ))}
+            </div>
           </div>
         )}
       </div>

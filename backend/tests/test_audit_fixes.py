@@ -31,6 +31,7 @@ from backend.collector.circuit_breaker import CircuitBreaker
 from backend.collector.parsers.endpoints import (
     parse_smart_money_cost,
     parse_trend_exhaustion,
+    parse_trend_purity,
 )
 from backend.core.config import load_settings
 from backend.models import (
@@ -83,6 +84,49 @@ def test_parse_trend_exhaustion_keeps_fractional_rows() -> None:
     assert len(atoms) == 2
     assert atoms[0].exhaustion == pytest.approx(8.5)
     assert atoms[1].exhaustion == 0.0
+
+
+def test_parse_trend_purity_fixes_total_vol_consistency() -> None:
+    payload = {
+        "trend_purity": [
+            {
+                "start_time": 1_760_680_800_000,
+                "end_time": None,
+                "avg_price": 100.0,
+                "buy_vol": 10.0,
+                "sell_vol": 15.0,
+                "total_vol": 10.0,  # 上游错填（应 >= 25）
+                "purity": 40.0,
+                "type": "Accumulation",
+            }
+        ]
+    }
+    result = parse_trend_purity("BTC", "30m", payload)
+    atoms = result.atoms.get("trend_purity") or []
+    assert len(atoms) == 1
+    assert atoms[0].total_vol == pytest.approx(25.0)
+
+
+def test_parse_trend_purity_logs_single_aggregated_warning(caplog) -> None:
+    payload = {
+        "trend_purity": [
+            {
+                "start_time": 1_760_680_800_000 + i * 1800_000,
+                "end_time": None,
+                "avg_price": 100.0 + i,
+                "buy_vol": 10.0,
+                "sell_vol": 20.0,
+                "total_vol": 10.0,  # 均触发修复
+                "purity": 33.0,
+                "type": "Accumulation",
+            }
+            for i in range(5)
+        ]
+    }
+    with caplog.at_level("WARNING"):
+        parse_trend_purity("BTC", "30m", payload)
+    msgs = [r.getMessage() for r in caplog.records if "trend_purity.total_vol" in r.getMessage()]
+    assert msgs.count("trend_purity.total_vol 上游错填（批次聚合）") == 1
 
 
 # ═════════════════ P0-2 score_reversal 方向口径 ═════════════════

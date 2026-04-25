@@ -293,6 +293,8 @@ export interface AIAnalysisReport {
   error_reason?: string | null;
   total_tokens: number;
   total_latency_ms: number;
+  unknown_price_count: number;
+  unknown_price_samples: number[];
   // 一句话摘要（hero 用）
   one_line: string;
   // markdown 完整报告（含分章节：判定 / 资金面 / 计划 / 风险 / 复盘）
@@ -313,6 +315,7 @@ export interface AIReportsListItem {
   status: "ok" | "error";
   total_tokens: number;
   total_latency_ms: number;
+  unknown_price_count: number;
   one_line: string;
 }
 
