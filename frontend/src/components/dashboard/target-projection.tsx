@@ -40,13 +40,25 @@ export function TargetProjectionCardView({ card, livePrice }: Props) {
     );
   }
 
+  // 顶部白话条：取「最近且置信度最高」的上方/下方各一个 item
+  // 排序口径：先按 |distance| 升序，再按 confidence 降序，取第一
+  const topAbove = pickFirst(card.above);
+  const topBelow = pickFirst(card.below);
+
   return (
     <div className="panel-glass rounded-lg p-4">
       <Header />
 
+      {/* 白话结论条（小白看这一行就够） */}
+      <TargetVerdict
+        topAbove={topAbove}
+        topBelow={topBelow}
+        livePrice={livePrice}
+      />
+
       {/* 上方目标（按距离升序：近 → 远） */}
       <Section
-        title="▲ 上方 · 多头磁吸"
+        title="▲ 上方 · 多头磁吸（涨能涨到哪）"
         items={card.above}
         side="above"
       />
@@ -63,16 +75,28 @@ export function TargetProjectionCardView({ card, livePrice }: Props) {
 
       {/* 下方目标（按距离升序：近 → 远） */}
       <Section
-        title="▼ 下方 · 空头磁吸"
+        title="▼ 下方 · 空头磁吸（跌能跌到哪）"
         items={card.below}
         side="below"
       />
 
       <div className="mt-3 text-[10px] text-foreground/55" title={card.note}>
-        📍 {card.note} · ⏳ bars_to_arrive 为 ATR 估算
+        📍 {card.note} · ⏳ 到达 K 线数 = ATR 估算 · ⭐ 越多越可靠
       </div>
     </div>
   );
+}
+
+function pickFirst(items: TargetItemCard[]): TargetItemCard | null {
+  if (items.length === 0) return null;
+  // 按 |distance| 升序 + confidence 降序，取第一名
+  const sorted = [...items].sort((a, b) => {
+    const da = Math.abs(a.distance_pct);
+    const db = Math.abs(b.distance_pct);
+    if (da !== db) return da - db;
+    return b.confidence - a.confidence;
+  });
+  return sorted[0];
 }
 
 function Header() {
@@ -82,6 +106,98 @@ function Header() {
       目标投影 · 磁吸地图
     </div>
   );
+}
+
+// ─── 小白白话总结条（最重要的两行） ─────────────
+
+/**
+ * 模板：
+ *   🎯 涨到 81,069  +0.5% · 约 6 根 · ⭐⭐⭐⭐
+ *   🛡 跌到 75,873  -2.3% · 约 12 根 · ⭐⭐⭐
+ *
+ * 取规则：上方 / 下方各取「最近 + 最高置信度」的第一名（pickFirst）。
+ */
+function TargetVerdict({
+  topAbove,
+  topBelow,
+  livePrice,
+}: {
+  topAbove: TargetItemCard | null;
+  topBelow: TargetItemCard | null;
+  livePrice: number | null;
+}) {
+  return (
+    <div className="mt-2 space-y-1 rounded border border-foreground/10 bg-white/5 px-3 py-2">
+      <VerdictLine
+        item={topAbove}
+        side="above"
+        livePrice={livePrice}
+        emptyText="上方暂无明显磁吸目标"
+      />
+      <VerdictLine
+        item={topBelow}
+        side="below"
+        livePrice={livePrice}
+        emptyText="下方暂无明显防线"
+      />
+    </div>
+  );
+}
+
+function VerdictLine({
+  item,
+  side,
+  livePrice,
+  emptyText,
+}: {
+  item: TargetItemCard | null;
+  side: "above" | "below";
+  livePrice: number | null;
+  emptyText: string;
+}) {
+  const tone = side === "above" ? "text-neon-lime" : "text-neon-magenta";
+  const arrow = side === "above" ? "🎯 涨到" : "🛡 跌到";
+
+  if (!item || livePrice == null) {
+    return (
+      <div className="text-[11px] text-foreground/55">
+        <span className="opacity-70">{arrow}</span> {emptyText}
+      </div>
+    );
+  }
+  const stars = confidenceStars(item.confidence);
+  const barsText =
+    item.bars_to_arrive == null
+      ? ""
+      : item.bars_to_arrive >= 50
+      ? " · 约 50+ 根"
+      : ` · 约 ${item.bars_to_arrive} 根`;
+
+  return (
+    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[12px]">
+      <span className="text-foreground/70">{arrow}</span>
+      <span className={cn("num text-base font-semibold", tone)}>
+        {formatPrice(item.price)}
+      </span>
+      <span className={cn("num text-[11px]", tone)}>
+        {item.distance_pct >= 0 ? "+" : ""}
+        {formatPct(item.distance_pct * 100)}
+      </span>
+      <span className="text-[11px] text-foreground/60">{barsText}</span>
+      <span className="text-[11px]" title={`置信度 ${item.confidence.toFixed(2)}`}>
+        {stars}
+      </span>
+    </div>
+  );
+}
+
+function confidenceStars(conf: number): string {
+  // 5 档星星：[0, 0.25) / [0.25, 0.45) / [0.45, 0.65) / [0.65, 0.8) / [0.8, 1]
+  if (conf >= 0.8) return "⭐⭐⭐⭐⭐";
+  if (conf >= 0.65) return "⭐⭐⭐⭐";
+  if (conf >= 0.45) return "⭐⭐⭐";
+  if (conf >= 0.25) return "⭐⭐";
+  return "⭐";
 }
 
 function Section({

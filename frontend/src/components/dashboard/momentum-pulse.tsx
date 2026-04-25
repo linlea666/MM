@@ -100,8 +100,17 @@ export function MomentumPulseCardView({ card, tf, anchorTs }: Props) {
         anchorTs={anchorTs}
       />
 
-      {/* 主视觉 · 双向能量柱 */}
-      <div className="mt-4">
+      {/* 白话结论条（小白看这一行就够） */}
+      <MomentumVerdict
+        scoreLong={card.score_long}
+        scoreShort={card.score_short}
+        dominant={dominant}
+        fatigue={card.fatigue_state}
+        override={card.override}
+      />
+
+      {/* 主视觉 · 双向能量柱（细节看这里） */}
+      <div className="mt-3">
         <DualBars
           scoreLong={card.score_long}
           scoreShort={card.score_short}
@@ -498,6 +507,85 @@ function OverrideStrip({ override }: { override: MomentumOverrideEvent }) {
       <div className="mt-0.5 text-[10px] text-foreground/65">
         ⚡ 这是「{dirLabel}事件」（瞬时） · 不等于动能方向（看上面双柱）
       </div>
+    </div>
+  );
+}
+
+// ─── 小白白话总结条（最重要的一句话） ─────────────
+
+/**
+ * 把 score_long / score_short / dominant / fatigue / override 翻译成一句人话。
+ *
+ * 模板：
+ *   🟢 多头偏强 · 强度中等   ｜⚡ 刚多头突破（瞬时事件，未必延续）
+ *   🔴 弱空头（多 10 vs 空 30）｜⚠ 中段疲劳，势头可能转弱
+ *   ⚪ 多空拉锯，无明显方向   ｜（无事件）
+ */
+function MomentumVerdict({
+  scoreLong,
+  scoreShort,
+  dominant,
+  fatigue,
+  override,
+}: {
+  scoreLong: number;
+  scoreShort: number;
+  dominant: MomentumSide;
+  fatigue: MomentumFatigue;
+  override: MomentumOverrideEvent | null | undefined;
+}) {
+  // ① 主导侧 + 强度 → 大字结论
+  const peak = Math.max(scoreLong, scoreShort);
+  let intensity: "中性" | "弱" | "中等" | "强";
+  if (peak < 15) intensity = "中性";
+  else if (peak < 30) intensity = "弱";
+  else if (peak < 60) intensity = "中等";
+  else intensity = "强";
+
+  let mainText: string;
+  let mainTone: string;
+  let icon: string;
+
+  if (dominant === "long") {
+    icon = "🟢";
+    mainText = `多头${intensity}（多 ${scoreLong} vs 空 ${scoreShort}）`;
+    mainTone = "text-neon-lime";
+  } else if (dominant === "short") {
+    icon = "🔴";
+    mainText = `空头${intensity}（多 ${scoreLong} vs 空 ${scoreShort}）`;
+    mainTone = "text-neon-magenta";
+  } else {
+    icon = "⚪";
+    mainText =
+      peak < 15
+        ? "多空都很弱，没人在烧油"
+        : `多空拉锯（多 ${scoreLong} vs 空 ${scoreShort}）`;
+    mainTone = "text-foreground/85";
+  }
+
+  // ② 副信息：override（事件）+ fatigue（疲劳）任一存在就显示
+  const subParts: string[] = [];
+  if (override) {
+    const dirText = override.direction === "bullish" ? "多头" : "空头";
+    subParts.push(`⚡ 刚发生${dirText}事件`);
+  }
+  if (fatigue === "exhausted") {
+    subParts.push("⚠ 趋势衰竭");
+  } else if (fatigue === "mid") {
+    subParts.push("⚠ 中段疲劳");
+  }
+
+  return (
+    <div className="mt-3 rounded border border-foreground/10 bg-white/5 px-3 py-2">
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+        <span className="text-xl leading-none">{icon}</span>
+        <span className={cn("text-sm font-semibold", mainTone)}>{mainText}</span>
+      </div>
+      {subParts.length > 0 && (
+        <div className="mt-1 text-[11px] text-foreground/70">
+          {subParts.join(" · ")}
+        </div>
+      )}
     </div>
   );
 }
