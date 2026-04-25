@@ -15,6 +15,7 @@ import type {
   LogsMeta,
   LogsQueryResp,
   LogsSummary,
+  MomentumPulseMultiResp,
   Subscription,
   SystemHealth,
 } from "./types";
@@ -43,6 +44,23 @@ export async function fetchDashboard(params: {
   tf?: string;
 }): Promise<DashboardSnapshot> {
   const r = await http.get<DashboardSnapshot>("/api/dashboard", { params });
+  return r.data;
+}
+
+// ─── V1.1 · Step 7 · 多 TF 动能能量柱 + 目标投影 ──────
+
+export async function fetchMomentumPulseMulti(params: {
+  symbol?: string;
+  tfs?: string[];
+}): Promise<MomentumPulseMultiResp> {
+  const query: { symbol?: string; tfs?: string } = {};
+  if (params.symbol) query.symbol = params.symbol;
+  if (params.tfs && params.tfs.length > 0) {
+    query.tfs = params.tfs.join(",");
+  }
+  const r = await http.get<MomentumPulseMultiResp>("/api/momentum_pulse", {
+    params: query,
+  });
   return r.data;
 }
 

@@ -23,6 +23,7 @@ from backend.api import (
     dashboard_router,
     indicators_router,
     logs_router,
+    momentum_pulse_router,
     subscriptions_router,
     system_router,
     ws_router,
@@ -268,6 +269,7 @@ def create_app() -> FastAPI:
     app.include_router(logs_router)
     app.include_router(ai_router)
     app.include_router(indicators_router)
+    app.include_router(momentum_pulse_router)
     app.include_router(ws_router)
 
     @app.get("/")

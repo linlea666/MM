@@ -228,6 +228,67 @@ export interface SegmentCard {
   hint: string;
 }
 
+// ─── V1.1 · Step 7 · 动能能量柱 + 目标投影 ────────────────
+
+export type MomentumSide = "long" | "short" | "neutral";
+export type MomentumStreakSide = "buy" | "sell" | "none";
+export type MomentumFatigue = "fresh" | "mid" | "exhausted";
+export type MomentumOverrideKind = "CHoCH" | "BOS" | "Sweep" | "Pierce";
+export type TargetKind =
+  | "roi"
+  | "pain"
+  | "cascade_band"
+  | "heatmap"
+  | "vacuum"
+  | "nearest_level";
+export type TargetSide = "above" | "below";
+export type TargetTier = "T1" | "T2";
+
+export interface MomentumContribItem {
+  label: string;
+  value: string;
+  delta: number;
+  side: "long" | "short" | "both" | "none";
+}
+
+export interface MomentumOverrideEvent {
+  kind: MomentumOverrideKind;
+  direction: "bullish" | "bearish";
+  bars_since: number;
+  detail: string;
+}
+
+export interface MomentumPulseCard {
+  score_long: number;
+  score_short: number;
+  dominant_side: MomentumSide;
+  streak_bars: number;
+  streak_side: MomentumStreakSide;
+  fatigue_state: MomentumFatigue;
+  fatigue_decay: number;
+  override?: MomentumOverrideEvent | null;
+  contributions: MomentumContribItem[];
+  note: string;
+}
+
+export interface TargetItemCard {
+  kind: TargetKind;
+  side: TargetSide;
+  tier: TargetTier;
+  price: number;
+  distance_pct: number;
+  confidence: number;
+  bars_to_arrive?: number | null;
+  evidence: string;
+}
+
+export interface TargetProjectionCard {
+  above: TargetItemCard[];
+  below: TargetItemCard[];
+  max_distance_pct: number;
+  note: string;
+}
+
 export interface DashboardCards {
   choch_latest?: ChochCard | null;
   choch_recent: ChochCard[];
@@ -236,6 +297,27 @@ export interface DashboardCards {
   retail_long_fuel: BandCard[];
   retail_short_fuel: BandCard[];
   segment?: SegmentCard | null;
+  // V1.1 · Step 7
+  momentum_pulse?: MomentumPulseCard | null;
+  target_projection?: TargetProjectionCard | null;
+}
+
+// 多 TF 灯带 · /api/momentum_pulse 响应（直出 view，前端按需展开）
+
+export interface MomentumPulseMultiItem {
+  tf: string;
+  anchor_ts: number | null;
+  current_price: number | null;
+  momentum_pulse: MomentumPulseCard | null;
+  target_projection: TargetProjectionCard | null;
+  stale_tables: string[];
+  available: boolean;
+  error?: string;
+}
+
+export interface MomentumPulseMultiResp {
+  symbol: string;
+  items: MomentumPulseMultiItem[];
 }
 
 export interface DashboardSnapshot {

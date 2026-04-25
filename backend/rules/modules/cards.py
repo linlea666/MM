@@ -18,10 +18,22 @@ from backend.models import (
     BandCard,
     ChochCard,
     DashboardCards,
+    MomentumContribItem,
+    MomentumOverrideEvent,
+    MomentumPulseCard,
     SegmentCard,
+    TargetItemCard,
+    TargetProjectionCard,
 )
 
-from ..features import BandView, ChochLatestView, FeatureSnapshot, SegmentPortrait
+from ..features import (
+    BandView,
+    ChochLatestView,
+    FeatureSnapshot,
+    MomentumPulseView,
+    SegmentPortrait,
+    TargetProjectionView,
+)
 
 __all__ = ["build_dashboard_cards"]
 
@@ -168,6 +180,53 @@ def _segment_card(portrait: SegmentPortrait) -> SegmentCard:
     )
 
 
+def _momentum_pulse_card(view: MomentumPulseView) -> MomentumPulseCard:
+    """MomentumPulseView → MomentumPulseCard（直映）。"""
+    override = None
+    if view.override is not None:
+        override = MomentumOverrideEvent(
+            kind=view.override.kind,
+            direction=view.override.direction,
+            bars_since=view.override.bars_since,
+            detail=view.override.detail,
+        )
+    contributions = [
+        MomentumContribItem(
+            label=c.label, value=c.value, delta=c.delta, side=c.side,
+        )
+        for c in view.contributions
+    ]
+    return MomentumPulseCard(
+        score_long=view.score_long,
+        score_short=view.score_short,
+        dominant_side=view.dominant_side,
+        streak_bars=view.streak_bars,
+        streak_side=view.streak_side,
+        fatigue_state=view.fatigue_state,
+        fatigue_decay=view.fatigue_decay,
+        override=override,
+        contributions=contributions,
+        note=view.note,
+    )
+
+
+def _target_projection_card(view: TargetProjectionView) -> TargetProjectionCard:
+    """TargetProjectionView → TargetProjectionCard（直映）。"""
+    def _conv(it) -> TargetItemCard:
+        return TargetItemCard(
+            kind=it.kind, side=it.side, tier=it.tier,
+            price=it.price, distance_pct=it.distance_pct,
+            confidence=it.confidence, bars_to_arrive=it.bars_to_arrive,
+            evidence=it.evidence,
+        )
+    return TargetProjectionCard(
+        above=[_conv(it) for it in view.above],
+        below=[_conv(it) for it in view.below],
+        max_distance_pct=view.max_distance_pct,
+        note=view.note,
+    )
+
+
 def _split_band_cards(
     views: list[BandView], *, ref_kind: str
 ) -> tuple[list[BandCard], list[BandCard]]:
@@ -232,6 +291,16 @@ def build_dashboard_cards(
         _segment_card(snap.segment_portrait) if snap.segment_portrait is not None else None
     )
 
+    # V1.1 · Step 7：动能能量柱 + 目标投影
+    momentum_pulse = (
+        _momentum_pulse_card(snap.momentum_pulse)
+        if snap.momentum_pulse is not None else None
+    )
+    target_projection = (
+        _target_projection_card(snap.target_projection)
+        if snap.target_projection is not None else None
+    )
+
     return DashboardCards(
         choch_latest=choch_latest,
         choch_recent=choch_recent,
@@ -240,4 +309,6 @@ def build_dashboard_cards(
         retail_long_fuel=retail_long_fuel,
         retail_short_fuel=retail_short_fuel,
         segment=segment,
+        momentum_pulse=momentum_pulse,
+        target_projection=target_projection,
     )

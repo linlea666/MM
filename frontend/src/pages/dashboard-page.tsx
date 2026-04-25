@@ -15,6 +15,8 @@ import { ChochCard } from "@/components/dashboard/choch-card";
 import { LiquidationBandsCard } from "@/components/dashboard/liquidation-bands-card";
 import { RetailBandsCard } from "@/components/dashboard/retail-bands-card";
 import { SegmentPortraitCard } from "@/components/dashboard/segment-portrait-card";
+import { MomentumPulseCardView } from "@/components/dashboard/momentum-pulse";
+import { TargetProjectionCardView } from "@/components/dashboard/target-projection";
 import { TimelineCard } from "@/components/dashboard/timeline-card";
 import { CapabilityScoresInline } from "@/components/dashboard/capability-scores-inline";
 import { DashboardSkeleton } from "@/components/dashboard/dashboard-skeleton";
@@ -85,6 +87,24 @@ export default function DashboardPage() {
           <ActionTriggers snap={snap} />
         </div>
       </div>
+
+      {/* 行 2.4：V1.1 · Step 7 · 动能能量柱 + 目标投影（磁吸地图） */}
+      {snap.cards && (
+        <div className="grid gap-4 lg:grid-cols-12">
+          <div className="lg:col-span-5">
+            <MomentumPulseCardView
+              card={snap.cards.momentum_pulse}
+              tf={tf}
+            />
+          </div>
+          <div className="lg:col-span-7">
+            <TargetProjectionCardView
+              card={snap.cards.target_projection}
+              livePrice={live.price ?? snap.current_price}
+            />
+          </div>
+        </div>
+      )}
 
       {/* 行 2.5：V1.1 数字化观察 —— ⚡ CHoCH / 💣 爆仓带 / 散户止损 / 波段四维 */}
       {snap.cards && (

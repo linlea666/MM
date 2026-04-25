@@ -460,6 +460,20 @@ WebSocket：
 
 ---
 
+### Step 7：动能能量柱 + 目标投影（V1.1 增量）
+
+> 把"现在多空哪边在烧油 / 油烧完前价格的磁吸目的地在哪"做成两张可视卡 + 多 TF 灯带。
+> 全部基于已有 `FeatureSnapshot` 字段派生，不引入新原子表。
+
+详见 [`MOMENTUM-PULSE.md`](dashboard-v1/MOMENTUM-PULSE.md)（含数据契约 / 配置 / 公式 / 风险）。
+
+- Step 7.1：S1 后端派生 view（`FeatureExtractor` 末尾增加 `_derive_momentum_pulse` / `_derive_target_projection`）
+- Step 7.2：S2 后端 DTO + cards 装入 + `rules.default.yaml` 新节 + 多 TF API `/api/momentum_pulse`
+- Step 7.3：S3 前端 `momentum-pulse.tsx` / `target-projection.tsx` + 多 TF 灯带 + 三只时钟
+- Step 7.4：S4 真实数据 24h 跑测，记录误判 → `MOMENTUM-TUNING-LOG.md`
+
+---
+
 ## 六、里程碑时间线
 
 | 里程碑 | 耗时 | 目标 |

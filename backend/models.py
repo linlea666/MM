@@ -794,6 +794,73 @@ class SegmentCard(_StrictBase):
     hint: str = ""      # 白话口诀（"🎯 T1 96,500 · T2 99,800 | 🛡️ 护城河 92,400"）
 
 
+# ── V1.1 · Step 7 · 动能能量柱 + 目标投影（数字化白话卡 · 直出给前端） ──
+
+class MomentumContribItem(_StrictBase):
+    """单条证据贡献，前端 tooltip 列表项。"""
+
+    label: str
+    value: str
+    delta: int
+    side: Literal["long", "short", "both", "none"]
+
+
+class MomentumOverrideEvent(_StrictBase):
+    """事件抢跑（CHoCH / Sweep / Pierce）。"""
+
+    kind: Literal["CHoCH", "BOS", "Sweep", "Pierce"]
+    direction: Literal["bullish", "bearish"]
+    bars_since: int
+    detail: str
+
+
+class MomentumPulseCard(_StrictBase):
+    """⚡ 动能能量柱卡（Card A）。
+
+    原料：``FeatureSnapshot.momentum_pulse``；UI 同时展示双向柱（多/空各 0~100），
+    `dominant_side=neutral` 表示拉锯（不画方向箭头）。
+    """
+
+    score_long: int                                 # 0~100
+    score_short: int                                # 0~100
+    dominant_side: Literal["long", "short", "neutral"]
+    streak_bars: int
+    streak_side: Literal["buy", "sell", "none"]
+    fatigue_state: Literal["fresh", "mid", "exhausted"]
+    fatigue_decay: float
+    override: MomentumOverrideEvent | None = None
+    contributions: list[MomentumContribItem] = Field(default_factory=list)
+    note: str = ""
+
+
+class TargetItemCard(_StrictBase):
+    """🎯 目标投影中的单个磁吸价位（Card B 的一条）。"""
+
+    kind: Literal[
+        "roi", "pain", "cascade_band", "heatmap", "vacuum", "nearest_level"
+    ]
+    side: Literal["above", "below"]
+    tier: Literal["T1", "T2"]
+    price: float
+    distance_pct: float
+    confidence: float
+    bars_to_arrive: int | None = None
+    evidence: str
+
+
+class TargetProjectionCard(_StrictBase):
+    """🎯 目标投影卡（Card B）。
+
+    `above` / `below` 已按 |distance_pct| 升序；
+    `note` 写死「磁吸价位地图，不构成预测」用于 UI 角标。
+    """
+
+    above: list[TargetItemCard] = Field(default_factory=list)
+    below: list[TargetItemCard] = Field(default_factory=list)
+    max_distance_pct: float
+    note: str = "📍 目标 = 磁吸价位地图，不构成预测"
+
+
 class DashboardCards(_StrictBase):
     """V1.1 · 数字化白话卡聚合（All in One，注入 DashboardSnapshot.cards）。"""
 
@@ -804,6 +871,9 @@ class DashboardCards(_StrictBase):
     retail_long_fuel: list[BandCard] = Field(default_factory=list)
     retail_short_fuel: list[BandCard] = Field(default_factory=list)
     segment: SegmentCard | None = None
+    # V1.1 · Step 7
+    momentum_pulse: MomentumPulseCard | None = None
+    target_projection: TargetProjectionCard | None = None
 
 
 # ── 时间线异动 ──
@@ -953,6 +1023,9 @@ __all__ = [
     "LogEntry",
     "MagnetSide",
     "MicroPocSegment",
+    "MomentumContribItem",
+    "MomentumOverrideEvent",
+    "MomentumPulseCard",
     "OrderBlock",
     "PainDrawdownSegment",
     "ParticipationGate",
@@ -972,6 +1045,8 @@ __all__ = [
     "Subscription",
     "SubscriptionStatus",
     "SystemHealth",
+    "TargetItemCard",
+    "TargetProjectionCard",
     "TimeHeatmapHour",
     "TimeWindowSegment",
     "TimelineEvent",

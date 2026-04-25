@@ -371,6 +371,43 @@ ai:
     jsonl_relpath: "data/ai_observations.jsonl"  # 相对 backend/ 的持久化文件
 
 # ════════════════════════════════════════════════════════════════════
+# V1.1 · Step 7 · 动能能量柱 + 目标投影
+# 详见 docs/dashboard-v1/MOMENTUM-PULSE.md
+# ════════════════════════════════════════════════════════════════════
+momentum_pulse:
+  thresholds:
+    power_imbalance_min_ratio: 1.5      # 单根 power_imbalance |ratio| ≥ 此值算"放大"
+    power_imbalance_streak_full: 3      # streak 达到此值即满分
+    resonance_min_count: 2              # 共振计数到此值即满分
+    atr_break_min: 0.3                  # pierce_atr_ratio ≥ 此值算"真穿越"
+    saturation_mid: 50                  # progress ≥ 此值算"半满"，触发 fatigue=mid
+    override_max_bars: 3                # 事件抢跑窗口（≤ N 根算"刚刚"）
+    min_dominant_gap: 10                # 多空分差 ≥ 此值才标 dominant
+  weights:                              # 6 个分量权重，总和 = 100
+    power_imbalance: 25
+    pi_streak: 20
+    cvd_slope: 20
+    resonance: 15
+    imbalance_ratio: 10
+    pierce: 10
+  fatigue_decay:                        # confidence 折扣（参见 §3.3 公式）
+    fresh: 0.0
+    mid: 0.2
+    exhausted: 0.5
+
+target_projection:
+  max_distance_pct: 0.08                # 8% 之外的目标过滤
+  max_bars_clip: 50                     # bars_to_arrive 上限
+  per_side_topn: 5                      # 每侧最多保留 N 个 item
+  source_weights:                       # confidence 公式中的来源固有权重
+    roi: 0.90
+    pain: 0.85
+    cascade_band: 0.65
+    heatmap: 0.70
+    vacuum: 0.50
+    nearest_level: 0.60
+
+# ════════════════════════════════════════════════════════════════════
 # UI 偏好（前端 /settings 可改，不影响后端行为）
 # ════════════════════════════════════════════════════════════════════
 ui:

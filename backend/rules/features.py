@@ -202,6 +202,95 @@ class TimeHeatmapView(BaseModel):
     is_active_session: bool              # current_activity ≥ 阈值
 
 
+# ── V1.1 · Step 7 · 动能能量柱 + 目标投影 ─────────────────────────
+
+class ContribItem(BaseModel):
+    """单条证据贡献（前端 tooltip 用）。
+
+    `side` 表示该贡献分计入哪一侧得分：
+      - ``long``  仅累加到 ``score_long``
+      - ``short`` 仅累加到 ``score_short``
+      - ``both``  双侧都加（极少；目前没用到，预留）
+      - ``none``  仅信息展示，不计分
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    label: str           # 例 "power_imbalance" / "cvd_slope"
+    value: str           # 原始值文本，例 "ratio=2.40 streak=3"
+    delta: int           # 该分量贡献分（带正负，便于 UI 推导）
+    side: Literal["long", "short", "both", "none"]
+
+
+class OverrideEvent(BaseModel):
+    """事件抢跑：CHoCH / Sweep / Pierce 在最近 N 根内触发的反向/同向警告。
+
+    抢跑事件 **只在 UI 闪电高亮**，不强行翻转 score 主方向；保留双信号留给
+    用户/AI 判断（详见 MOMENTUM-PULSE.md §2.4 铁律）。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["CHoCH", "BOS", "Sweep", "Pierce"]
+    direction: Literal["bullish", "bearish"]
+    bars_since: int                  # 距 anchor 几根（≥0）
+    detail: str                      # 白话："⚡ CHoCH↑ 破 93,800 · 3 根前"
+
+
+class MomentumPulseView(BaseModel):
+    """动能能量柱视图（Card A）。
+
+    口径：``score_long`` / ``score_short`` 各自独立 0~100，**不互减不归一**，
+    UI 同时展示两条柱（多空可同时存在 / 同时为弱）。``dominant_side`` 仅在
+    两侧差距 ≥ ``min_dominant_gap`` 时才给出方向，否则 ``neutral``。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    score_long: int                  # 0~100
+    score_short: int                 # 0~100
+    dominant_side: Literal["long", "short", "neutral"]
+    streak_bars: int                 # 主导侧的 power_imbalance 同向连续根数
+    streak_side: Literal["buy", "sell", "none"]
+    fatigue_state: Literal["fresh", "mid", "exhausted"]
+    fatigue_decay: float             # 0~1，confidence 折扣（exhausted=最大）
+    override: OverrideEvent | None = None
+    contributions: list[ContribItem] = Field(default_factory=list)
+    note: str = ""                   # 一句话白话（"多头烧油 65 / 空头 12 · streak 3 · fresh"）
+
+
+class TargetItem(BaseModel):
+    """目标投影中的单个磁吸价位（Card B 的一条）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal[
+        "roi", "pain", "cascade_band", "heatmap", "vacuum", "nearest_level"
+    ]
+    side: Literal["above", "below"]
+    tier: Literal["T1", "T2"]
+    price: float
+    distance_pct: float              # 带正负（above 为正 / below 为负）
+    confidence: float                # 0~1
+    bars_to_arrive: int | None       # |Δprice| / atr 估算；ATR 缺则 None
+    evidence: str                    # 白话来源说明
+
+
+class TargetProjectionView(BaseModel):
+    """目标投影视图（Card B）。
+
+    `above` / `below` 已按 |distance_pct| 升序排序（近的在前）。
+    `note` 写死「磁吸价位地图，不构成预测」用于 UI 角标，避免被误读。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    above: list[TargetItem] = Field(default_factory=list)
+    below: list[TargetItem] = Field(default_factory=list)
+    max_distance_pct: float          # 截断阈值（来自配置）
+    note: str = "📍 目标 = 磁吸价位地图，不构成预测"
+
+
 # ════════════════════════════════════════════════════════════════════
 # FeatureSnapshot：一次 tick 的完整"已知事实"
 # ════════════════════════════════════════════════════════════════════
@@ -309,6 +398,10 @@ class FeatureSnapshot(BaseModel):
     retail_stop_bands: list[BandView] = Field(default_factory=list)
     # 波段四维 JOIN 画像（ROI / Pain / Time / DdTolerance，best_effort）
     segment_portrait: SegmentPortrait | None = None
+
+    # ── V1.1 · Step 7 · 动能能量柱 + 目标投影（基于上述字段派生） ──
+    momentum_pulse: MomentumPulseView | None = None
+    target_projection: TargetProjectionView | None = None
 
     # ── 调试用：数据新鲜度 ──
     stale_tables: list[str] = Field(default_factory=list)  # 该 symbol/tf 缺数据的表
@@ -633,6 +726,49 @@ class FeatureExtractor:
             elif imb_lead != "neutral" and cvd_lead != "neutral" and imb_lead != cvd_lead:
                 momentum_consistency = "conflict"
 
+        # 9.6 V1.1 · Step 7：动能能量柱 + 目标投影派生（详见 MOMENTUM-PULSE.md）
+        #
+        # 这两个 view 完全基于上文已经准备好的字段（power_imbalance / cvd / resonance /
+        # exhaustion / saturation / choch / sweep / pierce / cascade / segment / vacuum /
+        # heatmap / nearest_*），不读 DB；放在 snap 组装之前，便于后续单测可单独调用
+        # 这两个派生函数，避免再次跑完整 extract。
+        momentum_pulse = _derive_momentum_pulse(
+            cfg=self._cfg,
+            anchor_ts=anchor_ts,
+            tf_ms=tf_ms,
+            stale_tables=stale,
+            power_imbalance_last=power_imbalance_last,
+            power_imbalance_streak=pi_streak,
+            power_imbalance_streak_side=pi_side,
+            cvd_slope=cvd_slope,
+            cvd_slope_sign=cvd_sign,
+            imbalance_green_ratio=green_ratio,
+            imbalance_red_ratio=red_ratio,
+            resonance_buy_count=buy_count,
+            resonance_sell_count=sell_count,
+            trend_exhaustion_last=trend_exhaustion_last,
+            exhaustion_streak=ex_streak,
+            exhaustion_streak_type=ex_type,
+            trend_saturation=trend_saturation,
+            choch_latest=choch_latest,
+            sweep_last=sweep_last,
+            just_broke_resistance=broke_r,
+            just_broke_support=broke_s,
+            pierce_atr_ratio=pierce_atr_ratio,
+        )
+        target_projection = _derive_target_projection(
+            cfg=self._cfg,
+            last_price=last_price,
+            atr=atr,
+            segment_portrait=segment_portrait,
+            cascade_views=cascade_views,
+            heatmap=heatmap,
+            vacuums=vacuums,
+            nearest_support_price=near_s_price,
+            nearest_resistance_price=near_r_price,
+            momentum_pulse=momentum_pulse,
+        )
+
         elapsed_ms = int((time.perf_counter() - t0) * 1000)
         snap = FeatureSnapshot(
             symbol=symbol,
@@ -697,6 +833,8 @@ class FeatureExtractor:
             cascade_bands=cascade_views,
             retail_stop_bands=retail_views,
             segment_portrait=segment_portrait,
+            momentum_pulse=momentum_pulse,
+            target_projection=target_projection,
             stale_tables=stale,
             generated_at=anchor_ts,
         )
@@ -1576,10 +1714,567 @@ def _pierce_recovered(
     return False
 
 
+# ════════════════════════════════════════════════════════════════════
+# V1.1 · Step 7：MomentumPulse / TargetProjection 派生
+# ════════════════════════════════════════════════════════════════════
+
+
+def _momentum_cfg(cfg: dict[str, Any]) -> dict[str, Any]:
+    """从 cfg 取 momentum_pulse 节，全字段带兜底默认。
+
+    与 ``rules.default.yaml::momentum_pulse`` 一一对应；任何字段缺失/类型异常
+    都退回到内建默认（写死兜底，避免 yaml 缺一行就崩）。
+    """
+    section = (cfg or {}).get("momentum_pulse", {}) if isinstance(cfg, dict) else {}
+    if not isinstance(section, dict):
+        section = {}
+    th = section.get("thresholds", {}) or {}
+    w = section.get("weights", {}) or {}
+    fd = section.get("fatigue_decay", {}) or {}
+    return {
+        "pi_min_ratio": float(th.get("power_imbalance_min_ratio", 1.5)),
+        "pi_streak_full": float(th.get("power_imbalance_streak_full", 3)),
+        "resonance_min_count": float(th.get("resonance_min_count", 2)),
+        "atr_break_min": float(th.get("atr_break_min", 0.3)),
+        "saturation_mid": float(th.get("saturation_mid", 50)),
+        "override_max_bars": int(th.get("override_max_bars", 3)),
+        "min_dominant_gap": int(th.get("min_dominant_gap", 10)),
+        "exhaustion_alert": float(
+            (cfg or {}).get("capabilities", {})
+                       .get("reversal", {})
+                       .get("thresholds", {})
+                       .get("exhaustion_alert", 5)
+            if isinstance(cfg, dict) else 5
+        ),
+        "exhaustion_consecutive_min": int(
+            (cfg or {}).get("capabilities", {})
+                       .get("reversal", {})
+                       .get("thresholds", {})
+                       .get("exhaustion_consecutive_min", 3)
+            if isinstance(cfg, dict) else 3
+        ),
+        "w": {
+            "power_imbalance": float(w.get("power_imbalance", 25)),
+            "pi_streak": float(w.get("pi_streak", 20)),
+            "cvd_slope": float(w.get("cvd_slope", 20)),
+            "resonance": float(w.get("resonance", 15)),
+            "imbalance_ratio": float(w.get("imbalance_ratio", 10)),
+            "pierce": float(w.get("pierce", 10)),
+        },
+        "fd": {
+            "fresh": float(fd.get("fresh", 0.0)),
+            "mid": float(fd.get("mid", 0.2)),
+            "exhausted": float(fd.get("exhausted", 0.5)),
+        },
+    }
+
+
+def _target_cfg(cfg: dict[str, Any]) -> dict[str, Any]:
+    section = (cfg or {}).get("target_projection", {}) if isinstance(cfg, dict) else {}
+    if not isinstance(section, dict):
+        section = {}
+    sw_raw = section.get("source_weights", {}) or {}
+    sw = {
+        "roi": float(sw_raw.get("roi", 0.90)),
+        "pain": float(sw_raw.get("pain", 0.85)),
+        "cascade_band": float(sw_raw.get("cascade_band", 0.65)),
+        "heatmap": float(sw_raw.get("heatmap", 0.70)),
+        "vacuum": float(sw_raw.get("vacuum", 0.50)),
+        "nearest_level": float(sw_raw.get("nearest_level", 0.60)),
+    }
+    return {
+        "max_distance_pct": float(section.get("max_distance_pct", 0.08)),
+        "max_bars_clip": int(section.get("max_bars_clip", 50)),
+        "per_side_topn": int(section.get("per_side_topn", 5)),
+        "source_weights": sw,
+    }
+
+
+def _clamp(v: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, v))
+
+
+def _override_detail(kind: str, direction: str, level_price: float, bars: int) -> str:
+    arrow = "↑" if direction == "bullish" else "↓"
+    when = "刚刚" if bars <= 0 else f"{bars} 根前"
+    if abs(level_price) < 1:
+        price_str = f"{level_price:,.4f}"
+    else:
+        price_str = f"{level_price:,.2f}"
+    return f"⚡ {kind}{arrow} 破 {price_str} · {when}"
+
+
+def _derive_momentum_pulse(
+    *,
+    cfg: dict[str, Any],
+    anchor_ts: int,
+    tf_ms: int,
+    stale_tables: list[str],
+    power_imbalance_last,
+    power_imbalance_streak: int,
+    power_imbalance_streak_side: Literal["buy", "sell", "none"],
+    cvd_slope: float | None,
+    cvd_slope_sign: Literal["up", "down", "flat"],
+    imbalance_green_ratio: float,
+    imbalance_red_ratio: float,
+    resonance_buy_count: int,
+    resonance_sell_count: int,
+    trend_exhaustion_last,
+    exhaustion_streak: int,
+    exhaustion_streak_type: Literal["Accumulation", "Distribution", "none"],
+    trend_saturation,
+    choch_latest: ChochLatestView | None,
+    sweep_last,
+    just_broke_resistance: bool,
+    just_broke_support: bool,
+    pierce_atr_ratio: float | None,
+) -> MomentumPulseView:
+    """派生 MomentumPulseView。
+
+    设计要点：
+      1. ``score_long`` / ``score_short`` 各自独立 0~100，**不互减**；
+         双侧同时强表示"激烈拉锯"，UI 双柱平行展示而非"净向"。
+      2. ``power_imbalance`` 数据 stale（atoms_power_imbalance 在 stale_tables 里）
+         时不计 PI/streak 分；其他字段照常。
+      3. ``override`` 优先级：CHoCH > Sweep > Pierce；同时存在时取最近一条。
+      4. ``fatigue_state`` 必须按"主导侧"匹配 exhaustion type，错配不算疲劳。
+    """
+    mc = _momentum_cfg(cfg)
+    w = mc["w"]
+    contributions: list[ContribItem] = []
+    long_score = 0.0
+    short_score = 0.0
+
+    pi_stale = "atoms_power_imbalance" in stale_tables
+    pi_ratio = abs(power_imbalance_last.ratio) if power_imbalance_last is not None else 0.0
+    pi_side = power_imbalance_streak_side  # buy / sell / none
+
+    # 1) power_imbalance 单根
+    if not pi_stale and power_imbalance_last is not None and pi_ratio >= mc["pi_min_ratio"]:
+        delta = w["power_imbalance"]
+        if pi_side == "buy":
+            long_score += delta
+            contributions.append(ContribItem(
+                label="power_imbalance",
+                value=f"ratio={pi_ratio:.2f} side=buy",
+                delta=int(round(delta)), side="long",
+            ))
+        elif pi_side == "sell":
+            short_score += delta
+            contributions.append(ContribItem(
+                label="power_imbalance",
+                value=f"ratio={pi_ratio:.2f} side=sell",
+                delta=int(round(delta)), side="short",
+            ))
+
+    # 2) power_imbalance streak（连续 N 根）
+    if not pi_stale and power_imbalance_streak > 0 and pi_side != "none":
+        ratio = _clamp(power_imbalance_streak / max(1.0, mc["pi_streak_full"]), 0.0, 1.0)
+        delta = w["pi_streak"] * ratio
+        if pi_side == "buy":
+            long_score += delta
+            contributions.append(ContribItem(
+                label="pi_streak", value=f"{power_imbalance_streak}/{int(mc['pi_streak_full'])} root buy",
+                delta=int(round(delta)), side="long",
+            ))
+        else:
+            short_score += delta
+            contributions.append(ContribItem(
+                label="pi_streak", value=f"{power_imbalance_streak}/{int(mc['pi_streak_full'])} root sell",
+                delta=int(round(delta)), side="short",
+            ))
+
+    # 3) cvd 斜率
+    if cvd_slope_sign == "up" and cvd_slope is not None:
+        delta = w["cvd_slope"]
+        long_score += delta
+        contributions.append(ContribItem(
+            label="cvd_slope", value=f"slope={cvd_slope:.2f}",
+            delta=int(round(delta)), side="long",
+        ))
+    elif cvd_slope_sign == "down" and cvd_slope is not None:
+        delta = w["cvd_slope"]
+        short_score += delta
+        contributions.append(ContribItem(
+            label="cvd_slope", value=f"slope={cvd_slope:.2f}",
+            delta=int(round(delta)), side="short",
+        ))
+
+    # 4) resonance
+    if resonance_buy_count > 0:
+        ratio = _clamp(resonance_buy_count / max(1.0, mc["resonance_min_count"]), 0.0, 1.0)
+        delta = w["resonance"] * ratio
+        long_score += delta
+        contributions.append(ContribItem(
+            label="resonance_buy", value=f"count={resonance_buy_count}",
+            delta=int(round(delta)), side="long",
+        ))
+    if resonance_sell_count > 0:
+        ratio = _clamp(resonance_sell_count / max(1.0, mc["resonance_min_count"]), 0.0, 1.0)
+        delta = w["resonance"] * ratio
+        short_score += delta
+        contributions.append(ContribItem(
+            label="resonance_sell", value=f"count={resonance_sell_count}",
+            delta=int(round(delta)), side="short",
+        ))
+
+    # 5) imbalance 绿/红占比
+    # 占比差 ≥ 0 才有意义；最大权重在差值 0.5 时给满
+    diff = imbalance_green_ratio - imbalance_red_ratio
+    if diff > 0:
+        ratio = _clamp(diff / 0.5, 0.0, 1.0)
+        delta = w["imbalance_ratio"] * ratio
+        long_score += delta
+        contributions.append(ContribItem(
+            label="imbalance_ratio",
+            value=f"green={imbalance_green_ratio:.2f} red={imbalance_red_ratio:.2f}",
+            delta=int(round(delta)), side="long",
+        ))
+    elif diff < 0:
+        ratio = _clamp(-diff / 0.5, 0.0, 1.0)
+        delta = w["imbalance_ratio"] * ratio
+        short_score += delta
+        contributions.append(ContribItem(
+            label="imbalance_ratio",
+            value=f"green={imbalance_green_ratio:.2f} red={imbalance_red_ratio:.2f}",
+            delta=int(round(delta)), side="short",
+        ))
+
+    # 6) pierce（真穿越）
+    if pierce_atr_ratio is not None and pierce_atr_ratio >= mc["atr_break_min"]:
+        delta = w["pierce"]
+        if just_broke_resistance:
+            long_score += delta
+            contributions.append(ContribItem(
+                label="pierce", value=f"atr_ratio={pierce_atr_ratio:.2f} 上破",
+                delta=int(round(delta)), side="long",
+            ))
+        if just_broke_support:
+            short_score += delta
+            contributions.append(ContribItem(
+                label="pierce", value=f"atr_ratio={pierce_atr_ratio:.2f} 下破",
+                delta=int(round(delta)), side="short",
+            ))
+
+    # 7) override（事件抢跑，优先级 CHoCH > Sweep > Pierce）
+    override: OverrideEvent | None = None
+    max_bars = mc["override_max_bars"]
+    if choch_latest is not None and choch_latest.bars_since <= max_bars:
+        override = OverrideEvent(
+            kind=choch_latest.kind,
+            direction=choch_latest.direction,
+            bars_since=choch_latest.bars_since,
+            detail=_override_detail(
+                choch_latest.kind, choch_latest.direction,
+                choch_latest.level_price, choch_latest.bars_since,
+            ),
+        )
+    elif sweep_last is not None and tf_ms > 0:
+        bars = max(0, (anchor_ts - sweep_last.ts) // tf_ms)
+        if bars <= max_bars:
+            sw_dir: Literal["bullish", "bearish"] = (
+                "bullish" if sweep_last.type == "bullish_sweep" else "bearish"
+            )
+            override = OverrideEvent(
+                kind="Sweep",
+                direction=sw_dir,
+                bars_since=int(bars),
+                detail=_override_detail(
+                    "Sweep", sw_dir, sweep_last.price, int(bars),
+                ),
+            )
+    elif (
+        pierce_atr_ratio is not None
+        and pierce_atr_ratio >= mc["atr_break_min"]
+        and (just_broke_resistance or just_broke_support)
+    ):
+        p_dir: Literal["bullish", "bearish"] = (
+            "bullish" if just_broke_resistance else "bearish"
+        )
+        override = OverrideEvent(
+            kind="Pierce",
+            direction=p_dir,
+            bars_since=0,
+            detail=f"⚡ Pierce{'↑' if p_dir == 'bullish' else '↓'} ATR×{pierce_atr_ratio:.2f} · 刚刚",
+        )
+
+    # 8) clip & dominant
+    score_long = int(round(_clamp(long_score, 0, 100)))
+    score_short = int(round(_clamp(short_score, 0, 100)))
+    if score_long - score_short >= mc["min_dominant_gap"]:
+        dominant: Literal["long", "short", "neutral"] = "long"
+    elif score_short - score_long >= mc["min_dominant_gap"]:
+        dominant = "short"
+    else:
+        dominant = "neutral"
+
+    # 9) streak（仅在主导侧匹配 streak_side 时输出）
+    if dominant == "long" and pi_side == "buy":
+        streak_bars = power_imbalance_streak
+    elif dominant == "short" and pi_side == "sell":
+        streak_bars = power_imbalance_streak
+    else:
+        streak_bars = 0
+
+    # 10) fatigue_state（必须按 dominant 侧 + exhaustion type 匹配）
+    fatigue_state: Literal["fresh", "mid", "exhausted"] = "fresh"
+    if (
+        trend_exhaustion_last is not None
+        and trend_exhaustion_last.exhaustion >= mc["exhaustion_alert"]
+        and exhaustion_streak >= mc["exhaustion_consecutive_min"]
+    ):
+        # Accumulation 类 exhaustion 警告"上涨疲劳"，只在 dominant=long 时算 exhausted；
+        # Distribution 类同理；type=none 不视作疲劳。
+        match = (
+            (dominant == "long" and exhaustion_streak_type == "Accumulation")
+            or (dominant == "short" and exhaustion_streak_type == "Distribution")
+        )
+        if match:
+            fatigue_state = "exhausted"
+    if fatigue_state == "fresh" and trend_saturation is not None:
+        if trend_saturation.progress >= mc["saturation_mid"]:
+            fatigue_state = "mid"
+
+    fatigue_decay = mc["fd"][fatigue_state]
+
+    # 11) note（白话一句话）
+    side_label = {"long": "多头", "short": "空头", "neutral": "中性"}[dominant]
+    note = (
+        f"{side_label} · 多 {score_long} / 空 {score_short} · "
+        f"streak {streak_bars} · {fatigue_state}"
+    )
+    if pi_stale:
+        note += " · ⚠ PI 数据陈旧"
+    if override is not None:
+        note += f" · {override.detail}"
+
+    return MomentumPulseView(
+        score_long=score_long,
+        score_short=score_short,
+        dominant_side=dominant,
+        streak_bars=int(streak_bars),
+        streak_side=pi_side,
+        fatigue_state=fatigue_state,
+        fatigue_decay=round(fatigue_decay, 3),
+        override=override,
+        contributions=contributions,
+        note=note,
+    )
+
+
+def _bars_to_arrive(price: float, last_price: float, atr: float | None, clip: int) -> int | None:
+    if atr is None or atr <= 0:
+        return None
+    bars = int(round(abs(price - last_price) / atr))
+    return min(max(bars, 0), clip)
+
+
+def _push_target(
+    items: list[TargetItem],
+    *,
+    kind: str,
+    price: float,
+    last_price: float,
+    atr: float | None,
+    cfg: dict[str, Any],
+    momentum_pulse: MomentumPulseView | None,
+    tier: Literal["T1", "T2"],
+    evidence: str,
+) -> None:
+    """构造一个 TargetItem 并 push 进 items（distance_pct 超阈值则跳过）。
+
+    confidence 公式（详见 MOMENTUM-PULSE.md §3.3）：
+      0.45 * source_weight
+      + 0.25 * (1 - dist/max)
+      + 0.20 * align_with_momentum
+      + 0.10 * (1 - fatigue_decay)
+    """
+    if last_price <= 0:
+        return
+    distance_pct = (price - last_price) / last_price
+    abs_dist = abs(distance_pct)
+    max_d = cfg["max_distance_pct"]
+    if abs_dist > max_d:
+        return
+    side: Literal["above", "below"] = "above" if distance_pct >= 0 else "below"
+    sw = cfg["source_weights"].get(kind, 0.5)
+
+    align = 0.0
+    if momentum_pulse is not None:
+        if side == "above" and momentum_pulse.dominant_side == "long":
+            align = 1.0
+        elif side == "below" and momentum_pulse.dominant_side == "short":
+            align = 1.0
+
+    fd = momentum_pulse.fatigue_decay if momentum_pulse is not None else 0.0
+    near_score = 1.0 - (abs_dist / max_d) if max_d > 0 else 0.0
+
+    confidence = _clamp(
+        0.45 * sw + 0.25 * near_score + 0.20 * align + 0.10 * (1 - fd),
+        0.0, 1.0,
+    )
+
+    items.append(TargetItem(
+        kind=kind,  # type: ignore[arg-type]
+        side=side,
+        tier=tier,
+        price=round(price, 6),
+        distance_pct=round(distance_pct, 4),
+        confidence=round(confidence, 3),
+        bars_to_arrive=_bars_to_arrive(price, last_price, atr, cfg["max_bars_clip"]),
+        evidence=evidence,
+    ))
+
+
+def _derive_target_projection(
+    *,
+    cfg: dict[str, Any],
+    last_price: float,
+    atr: float | None,
+    segment_portrait: SegmentPortrait | None,
+    cascade_views: list[BandView],
+    heatmap: list,
+    vacuums: list,
+    nearest_support_price: float | None,
+    nearest_resistance_price: float | None,
+    momentum_pulse: MomentumPulseView | None,
+) -> TargetProjectionView:
+    """派生 TargetProjectionView。
+
+    所有目标项的 side 由 ``distance_pct`` 直接决定（current price 是中点），
+    不按 ROI/Pain 的"语义方向"硬定（避免 type=Distribution 的 ROI 在上方却被错放下方）。
+    """
+    tc = _target_cfg(cfg)
+    items: list[TargetItem] = []
+
+    # 1) ROI 目标（T1=avg / T2=max）
+    if segment_portrait is not None:
+        if segment_portrait.roi_limit_avg_price is not None:
+            _push_target(
+                items, kind="roi", price=segment_portrait.roi_limit_avg_price,
+                last_price=last_price, atr=atr, cfg=tc,
+                momentum_pulse=momentum_pulse, tier="T1",
+                evidence="🎯 ROI T1 平均目标",
+            )
+        if segment_portrait.roi_limit_max_price is not None:
+            _push_target(
+                items, kind="roi", price=segment_portrait.roi_limit_max_price,
+                last_price=last_price, atr=atr, cfg=tc,
+                momentum_pulse=momentum_pulse, tier="T2",
+                evidence="🎯 ROI T2 极限目标",
+            )
+        # 2) Pain 防线（T1=avg / T2=max）
+        if segment_portrait.pain_avg_price is not None:
+            _push_target(
+                items, kind="pain", price=segment_portrait.pain_avg_price,
+                last_price=last_price, atr=atr, cfg=tc,
+                momentum_pulse=momentum_pulse, tier="T1",
+                evidence="🛡 Pain T1 容忍带",
+            )
+        if segment_portrait.pain_max_price is not None:
+            _push_target(
+                items, kind="pain", price=segment_portrait.pain_max_price,
+                last_price=last_price, atr=atr, cfg=tc,
+                momentum_pulse=momentum_pulse, tier="T2",
+                evidence="🛡 Pain T2 极限防线",
+            )
+
+    # 3) cascade 爆仓带（按 signal_count desc 取 TopN，T1=最强 / T2=次强）
+    if cascade_views:
+        # 按强度降序：signal_count 优先，volume 次之
+        sorted_bands = sorted(
+            cascade_views,
+            key=lambda b: (b.signal_count or 0, abs(b.volume)),
+            reverse=True,
+        )
+        for idx, b in enumerate(sorted_bands[: tc["per_side_topn"]]):
+            tier: Literal["T1", "T2"] = "T1" if idx == 0 else "T2"
+            sc = b.signal_count or 0
+            ev = f"💣 Cascade {b.side} count={sc}"
+            _push_target(
+                items, kind="cascade_band", price=b.avg_price,
+                last_price=last_price, atr=atr, cfg=tc,
+                momentum_pulse=momentum_pulse, tier=tier, evidence=ev,
+            )
+
+    # 4) heatmap（按 intensity desc 取 TopN）
+    if heatmap:
+        sorted_h = sorted(heatmap, key=lambda h: getattr(h, "intensity", 0.0), reverse=True)
+        for idx, h in enumerate(sorted_h[: tc["per_side_topn"]]):
+            tier = "T1" if idx == 0 else "T2"
+            _push_target(
+                items, kind="heatmap", price=h.price,
+                last_price=last_price, atr=atr, cfg=tc,
+                momentum_pulse=momentum_pulse, tier=tier,
+                evidence=f"🌡 Heatmap intensity={getattr(h, 'intensity', 0.0):.2f}",
+            )
+
+    # 5) vacuums（按到现价的距离取上下最近各一条）
+    if vacuums:
+        # 对每个 vacuum 取中价
+        v_above = [v for v in vacuums if (v.low + v.high) / 2 > last_price]
+        v_below = [v for v in vacuums if (v.low + v.high) / 2 <= last_price]
+        if v_above:
+            v = min(v_above, key=lambda x: (x.low + x.high) / 2 - last_price)
+            mid = (v.low + v.high) / 2
+            _push_target(
+                items, kind="vacuum", price=mid,
+                last_price=last_price, atr=atr, cfg=tc,
+                momentum_pulse=momentum_pulse, tier="T1",
+                evidence=f"💨 真空 [{v.low:.2f}, {v.high:.2f}]",
+            )
+        if v_below:
+            v = max(v_below, key=lambda x: (x.low + x.high) / 2 - last_price)
+            mid = (v.low + v.high) / 2
+            _push_target(
+                items, kind="vacuum", price=mid,
+                last_price=last_price, atr=atr, cfg=tc,
+                momentum_pulse=momentum_pulse, tier="T1",
+                evidence=f"💨 真空 [{v.low:.2f}, {v.high:.2f}]",
+            )
+
+    # 6) nearest_level（最近 R/S 兜底，永远显示）
+    if nearest_resistance_price is not None:
+        _push_target(
+            items, kind="nearest_level", price=nearest_resistance_price,
+            last_price=last_price, atr=atr, cfg=tc,
+            momentum_pulse=momentum_pulse, tier="T1",
+            evidence="◯ 最近阻力",
+        )
+    if nearest_support_price is not None:
+        _push_target(
+            items, kind="nearest_level", price=nearest_support_price,
+            last_price=last_price, atr=atr, cfg=tc,
+            momentum_pulse=momentum_pulse, tier="T1",
+            evidence="◯ 最近支撑",
+        )
+
+    # 拆 above/below + 按 |distance| 升序 + 限制每侧 TopN
+    above = sorted(
+        [it for it in items if it.side == "above"],
+        key=lambda x: abs(x.distance_pct),
+    )[: tc["per_side_topn"]]
+    below = sorted(
+        [it for it in items if it.side == "below"],
+        key=lambda x: abs(x.distance_pct),
+    )[: tc["per_side_topn"]]
+
+    return TargetProjectionView(
+        above=above,
+        below=below,
+        max_distance_pct=tc["max_distance_pct"],
+    )
+
+
 __all__ = [
     "BandView",
     "ChochLatestView",
+    "ContribItem",
     "FeatureExtractor",
     "FeatureSnapshot",
+    "MomentumPulseView",
+    "OverrideEvent",
     "SegmentPortrait",
+    "TargetItem",
+    "TargetProjectionView",
 ]
