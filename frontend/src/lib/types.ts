@@ -289,6 +289,30 @@ export interface TargetProjectionCard {
   note: string;
 }
 
+// V1.1 · Step 7.5 · 场景识别白话卡
+export type MomentumScenarioId =
+  | "bull_strong"
+  | "bull_mid"
+  | "bull_late"
+  | "bear_strong"
+  | "bear_mid"
+  | "bear_late"
+  | "fake_breakout"
+  | "top_reversal"
+  | "bottom_reversal"
+  | "neutral";
+
+export type MomentumScenarioRisk = "low" | "mid" | "high";
+
+export interface MomentumScenarioCard {
+  scenario: MomentumScenarioId;
+  label: string;
+  text: string;
+  risk: MomentumScenarioRisk;
+  evidence: string[];
+  action: string;
+}
+
 export interface DashboardCards {
   choch_latest?: ChochCard | null;
   choch_recent: ChochCard[];
@@ -300,6 +324,8 @@ export interface DashboardCards {
   // V1.1 · Step 7
   momentum_pulse?: MomentumPulseCard | null;
   target_projection?: TargetProjectionCard | null;
+  // V1.1 · Step 7.5
+  momentum_scenario?: MomentumScenarioCard | null;
 }
 
 // 多 TF 灯带 · /api/momentum_pulse 响应（直出 view，前端按需展开）
@@ -310,6 +336,7 @@ export interface MomentumPulseMultiItem {
   current_price: number | null;
   momentum_pulse: MomentumPulseCard | null;
   target_projection: TargetProjectionCard | null;
+  momentum_scenario: MomentumScenarioCard | null;
   stale_tables: string[];
   available: boolean;
   error?: string;

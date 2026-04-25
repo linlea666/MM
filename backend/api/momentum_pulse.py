@@ -86,6 +86,7 @@ async def _fetch_one(
                 "current_price": None,
                 "momentum_pulse": None,
                 "target_projection": None,
+                "momentum_scenario": None,
                 "stale_tables": [],
                 "available": False,
             }
@@ -100,6 +101,10 @@ async def _fetch_one(
             "target_projection": (
                 snap.target_projection.model_dump()
                 if snap.target_projection is not None else None
+            ),
+            "momentum_scenario": (
+                snap.momentum_scenario.model_dump()
+                if snap.momentum_scenario is not None else None
             ),
             "stale_tables": list(snap.stale_tables),
             "available": True,
@@ -148,6 +153,7 @@ async def get_momentum_pulse_multi(
                 "current_price": None,
                 "momentum_pulse": None,
                 "target_projection": None,
+                "momentum_scenario": None,
                 "stale_tables": [],
                 "available": False,
                 "error": str(r),

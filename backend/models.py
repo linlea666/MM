@@ -861,6 +861,27 @@ class TargetProjectionCard(_StrictBase):
     note: str = "📍 目标 = 磁吸价位地图，不构成预测"
 
 
+class MomentumScenarioCard(_StrictBase):
+    """🎯 当前场景白话卡（Card A 顶部）。
+
+    后端规则识别（``_derive_momentum_scenario``）→ 浓缩成一句白话 + 风险等级 +
+    操作建议；详见 ``docs/dashboard-v1/MOMENTUM-PLAYBOOK.md`` §5。
+    """
+
+    scenario: Literal[
+        "bull_strong", "bull_mid", "bull_late",
+        "bear_strong", "bear_mid", "bear_late",
+        "fake_breakout",
+        "top_reversal", "bottom_reversal",
+        "neutral",
+    ]
+    label: str
+    text: str
+    risk: Literal["low", "mid", "high"]
+    evidence: list[str] = Field(default_factory=list)
+    action: str = ""
+
+
 class DashboardCards(_StrictBase):
     """V1.1 · 数字化白话卡聚合（All in One，注入 DashboardSnapshot.cards）。"""
 
@@ -874,6 +895,8 @@ class DashboardCards(_StrictBase):
     # V1.1 · Step 7
     momentum_pulse: MomentumPulseCard | None = None
     target_projection: TargetProjectionCard | None = None
+    # V1.1 · Step 7.5
+    momentum_scenario: MomentumScenarioCard | None = None
 
 
 # ── 时间线异动 ──

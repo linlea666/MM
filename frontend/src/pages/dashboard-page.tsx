@@ -96,6 +96,7 @@ export default function DashboardPage() {
               card={snap.cards.momentum_pulse}
               tf={tf}
               anchorTs={snap.timestamp}
+              scenario={snap.cards.momentum_scenario}
             />
           </div>
           <div className="lg:col-span-7">

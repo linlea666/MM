@@ -21,6 +21,7 @@ from backend.models import (
     MomentumContribItem,
     MomentumOverrideEvent,
     MomentumPulseCard,
+    MomentumScenarioCard,
     SegmentCard,
     TargetItemCard,
     TargetProjectionCard,
@@ -31,6 +32,7 @@ from ..features import (
     ChochLatestView,
     FeatureSnapshot,
     MomentumPulseView,
+    MomentumScenarioView,
     SegmentPortrait,
     TargetProjectionView,
 )
@@ -210,6 +212,18 @@ def _momentum_pulse_card(view: MomentumPulseView) -> MomentumPulseCard:
     )
 
 
+def _momentum_scenario_card(view: MomentumScenarioView) -> MomentumScenarioCard:
+    """MomentumScenarioView → MomentumScenarioCard（直映）。"""
+    return MomentumScenarioCard(
+        scenario=view.scenario,
+        label=view.label,
+        text=view.text,
+        risk=view.risk,
+        evidence=list(view.evidence),
+        action=view.action,
+    )
+
+
 def _target_projection_card(view: TargetProjectionView) -> TargetProjectionCard:
     """TargetProjectionView → TargetProjectionCard（直映）。"""
     def _conv(it) -> TargetItemCard:
@@ -300,6 +314,11 @@ def build_dashboard_cards(
         _target_projection_card(snap.target_projection)
         if snap.target_projection is not None else None
     )
+    # V1.1 · Step 7.5：场景识别白话卡
+    momentum_scenario = (
+        _momentum_scenario_card(snap.momentum_scenario)
+        if snap.momentum_scenario is not None else None
+    )
 
     return DashboardCards(
         choch_latest=choch_latest,
@@ -311,4 +330,5 @@ def build_dashboard_cards(
         segment=segment,
         momentum_pulse=momentum_pulse,
         target_projection=target_projection,
+        momentum_scenario=momentum_scenario,
     )

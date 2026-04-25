@@ -291,6 +291,35 @@ class TargetProjectionView(BaseModel):
     note: str = "📍 目标 = 磁吸价位地图，不构成预测"
 
 
+class MomentumScenarioView(BaseModel):
+    """场景识别（Step 7.5）：把 momentum + target + override 浓缩成一句白话。
+
+    完全规则化，零黑盒。匹配优先级（紧迫 / 风险高 → 低）：
+
+      ``fake_breakout`` ▶ ``reversal`` ▶ ``late`` ▶ ``strong`` ▶ ``mid`` ▶ ``neutral``
+
+    单 TF 内可识别的 9 类 + ``neutral`` fallback。多 TF 增强（A 级共振 /
+    逼空 / 多陷）由 ``/api/momentum_pulse`` 在汇总三个 TF 后另做（见 Step 7.6 计划）。
+
+    详见 ``docs/dashboard-v1/MOMENTUM-PLAYBOOK.md`` §5。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    scenario: Literal[
+        "bull_strong", "bull_mid", "bull_late",
+        "bear_strong", "bear_mid", "bear_late",
+        "fake_breakout",
+        "top_reversal", "bottom_reversal",
+        "neutral",
+    ]
+    label: str                       # 短标：「多头强势」/「顶部反转嫌疑」
+    text: str                        # 完整白话：「🟢 多头强势 · 趋势确认中」
+    risk: Literal["low", "mid", "high"]
+    evidence: list[str] = Field(default_factory=list)  # 白话证据链 2~3 条
+    action: str = ""                 # 一句话建议（"顺势小仓 / 等回踩"）
+
+
 # ════════════════════════════════════════════════════════════════════
 # FeatureSnapshot：一次 tick 的完整"已知事实"
 # ════════════════════════════════════════════════════════════════════
@@ -402,6 +431,8 @@ class FeatureSnapshot(BaseModel):
     # ── V1.1 · Step 7 · 动能能量柱 + 目标投影（基于上述字段派生） ──
     momentum_pulse: MomentumPulseView | None = None
     target_projection: TargetProjectionView | None = None
+    # Step 7.5：场景识别（白话）；同样在 momentum_pulse / target_projection 之后派生
+    momentum_scenario: MomentumScenarioView | None = None
 
     # ── 调试用：数据新鲜度 ──
     stale_tables: list[str] = Field(default_factory=list)  # 该 symbol/tf 缺数据的表
@@ -768,6 +799,11 @@ class FeatureExtractor:
             nearest_resistance_price=near_r_price,
             momentum_pulse=momentum_pulse,
         )
+        momentum_scenario = _derive_momentum_scenario(
+            cfg=self._cfg,
+            momentum_pulse=momentum_pulse,
+            target_projection=target_projection,
+        )
 
         elapsed_ms = int((time.perf_counter() - t0) * 1000)
         snap = FeatureSnapshot(
@@ -835,6 +871,7 @@ class FeatureExtractor:
             segment_portrait=segment_portrait,
             momentum_pulse=momentum_pulse,
             target_projection=target_projection,
+            momentum_scenario=momentum_scenario,
             stale_tables=stale,
             generated_at=anchor_ts,
         )
@@ -2302,6 +2339,228 @@ def _derive_target_projection(
     )
 
 
+# ── V1.1 · Step 7.5 · 场景识别（白话总结） ─────────────────────────
+
+def _scenario_cfg(cfg: dict[str, Any]) -> dict[str, Any]:
+    """从 cfg 取 ``momentum_scenario`` 节，全字段带兜底默认。
+
+    与 ``rules.default.yaml::momentum_scenario`` 对应；任何字段缺失/类型异常
+    都退回到内建默认。
+    """
+    section = (cfg or {}).get("momentum_scenario", {}) if isinstance(cfg, dict) else {}
+    if not isinstance(section, dict):
+        section = {}
+    th = section.get("thresholds", {}) or {}
+    return {
+        "strong_score": int(th.get("strong_score", 60)),
+        "mid_score": int(th.get("mid_score", 30)),
+        "late_target_confidence": float(th.get("late_target_confidence", 0.7)),
+        "late_target_max_distance_pct": float(th.get("late_target_max_distance_pct", 0.005)),
+    }
+
+
+def _has_pierce_oscillation(momentum_pulse: MomentumPulseView | None) -> bool:
+    """contributions 内是否有「pierce 双向震荡」hint（_derive_momentum_pulse §6 写入）。"""
+    if momentum_pulse is None:
+        return False
+    return any(
+        c.label == "pierce" and c.side == "both"
+        for c in momentum_pulse.contributions
+    )
+
+
+def _has_late_target(
+    *,
+    side: Literal["above", "below"],
+    target_projection: TargetProjectionView | None,
+    sc: dict[str, Any],
+) -> tuple[bool, str | None]:
+    """主导侧是否已撞到 ⭐⭐⭐⭐+ 高置信目标且距离 ≤ 0.5%。返回 (是否, 触发证据文案)。"""
+    if target_projection is None:
+        return False, None
+    items = target_projection.above if side == "above" else target_projection.below
+    for it in items:
+        if (
+            it.confidence >= sc["late_target_confidence"]
+            and abs(it.distance_pct) <= sc["late_target_max_distance_pct"]
+        ):
+            arrow = "↑" if side == "above" else "↓"
+            return True, (
+                f"价已贴 ⭐⭐⭐⭐+ 目标 {arrow}{it.price:,.2f}"
+                f"（距 {it.distance_pct * 100:+.2f}%）"
+            )
+    return False, None
+
+
+def _derive_momentum_scenario(
+    *,
+    cfg: dict[str, Any],
+    momentum_pulse: MomentumPulseView | None,
+    target_projection: TargetProjectionView | None,
+) -> MomentumScenarioView | None:
+    """规则化场景识别：根据动能 + 目标 + 事件，匹配预设场景标签。
+
+    匹配优先级（自上而下，第一条命中即返回）：
+
+      1. ``fake_breakout``     — pierce 双向震荡
+      2. ``top_reversal``      — 多头主导 + 反向 Sweep/CHoCH
+      3. ``bottom_reversal``   — 空头主导 + 反向 Sweep/CHoCH
+      4. ``bull_late``         — 多头主导 + 衰竭 + 价撞 ⭐⭐⭐⭐+ 上方目标
+      5. ``bear_late``         — 镜像
+      6. ``bull_strong``       — score_long ≥ 60 · 主导=多 · fresh/mid
+      7. ``bear_strong``       — 镜像
+      8. ``bull_mid``          — 主导=多 · 30 ≤ score_long < 60
+      9. ``bear_mid``          — 镜像
+     10. ``neutral``           — fallback
+    """
+    if momentum_pulse is None:
+        return None
+    sc = _scenario_cfg(cfg)
+    mp = momentum_pulse
+    dom = mp.dominant_side
+    fat = mp.fatigue_state
+    ov = mp.override
+
+    score_l = mp.score_long
+    score_s = mp.score_short
+    base_evidence = [
+        f"多 {score_l} / 空 {score_s}",
+        {"fresh": "🟢 新鲜", "mid": "🟡 中段疲劳", "exhausted": "🔴 趋势衰竭"}[fat],
+    ]
+
+    # 1) fake_breakout
+    if _has_pierce_oscillation(mp):
+        ev = list(base_evidence) + ["⚠ pierce 双向震荡"]
+        return MomentumScenarioView(
+            scenario="fake_breakout",
+            label="假突破震荡",
+            text="⚠ 假突破震荡盘 · 上下都插针",
+            risk="mid",
+            evidence=ev,
+            action="不进 · 等方向明朗",
+        )
+
+    # 2) top_reversal（上涨中反向事件）
+    if (
+        dom == "long"
+        and ov is not None
+        and ov.kind in ("Sweep", "CHoCH", "BOS")
+        and ov.direction == "bearish"
+    ):
+        ev = list(base_evidence) + [f"⚡ {ov.detail}"]
+        return MomentumScenarioView(
+            scenario="top_reversal",
+            label="顶部反转嫌疑",
+            text=f"⚠ 顶部反转嫌疑 · 多头中遇 {ov.kind}↓",
+            risk="high",
+            evidence=ev,
+            action="止盈 · 不再加多",
+        )
+
+    # 3) bottom_reversal（下跌中反向事件）
+    if (
+        dom == "short"
+        and ov is not None
+        and ov.kind in ("Sweep", "CHoCH", "BOS")
+        and ov.direction == "bullish"
+    ):
+        ev = list(base_evidence) + [f"⚡ {ov.detail}"]
+        return MomentumScenarioView(
+            scenario="bottom_reversal",
+            label="底部反转嫌疑",
+            text=f"✓ 底部反转嫌疑 · 空头中遇 {ov.kind}↑",
+            risk="mid",
+            evidence=ev,
+            action="止盈空头 · 可埋伏小仓多",
+        )
+
+    # 4) bull_late
+    if dom == "long" and fat == "exhausted":
+        hit, hint = _has_late_target(
+            side="above", target_projection=target_projection, sc=sc,
+        )
+        if hit:
+            ev = list(base_evidence) + [hint or ""]
+            return MomentumScenarioView(
+                scenario="bull_late",
+                label="多头末段",
+                text="🟡 多头末段 · 进入止盈区",
+                risk="high",
+                evidence=ev,
+                action="止盈减仓 · 不再追多",
+            )
+
+    # 5) bear_late
+    if dom == "short" and fat == "exhausted":
+        hit, hint = _has_late_target(
+            side="below", target_projection=target_projection, sc=sc,
+        )
+        if hit:
+            ev = list(base_evidence) + [hint or ""]
+            return MomentumScenarioView(
+                scenario="bear_late",
+                label="空头末段",
+                text="🟡 空头末段 · 进入止盈区",
+                risk="high",
+                evidence=ev,
+                action="止盈空头 · 警惕反弹",
+            )
+
+    # 6) bull_strong
+    if dom == "long" and score_l >= sc["strong_score"] and fat in ("fresh", "mid"):
+        return MomentumScenarioView(
+            scenario="bull_strong",
+            label="多头强势",
+            text="🟢 多头强势 · 趋势确认中",
+            risk="low",
+            evidence=base_evidence,
+            action="顺势 · 回踩入场",
+        )
+
+    # 7) bear_strong
+    if dom == "short" and score_s >= sc["strong_score"] and fat in ("fresh", "mid"):
+        return MomentumScenarioView(
+            scenario="bear_strong",
+            label="空头强势",
+            text="🔴 空头强势 · 趋势确认中",
+            risk="low",
+            evidence=base_evidence,
+            action="顺势 · 反弹入场",
+        )
+
+    # 8) bull_mid
+    if dom == "long" and sc["mid_score"] <= score_l < sc["strong_score"]:
+        return MomentumScenarioView(
+            scenario="bull_mid",
+            label="多头中等",
+            text="🟢 多头中等 · 等回踩或事件确认",
+            risk="mid",
+            evidence=base_evidence,
+            action="小仓试探 · 等回踩",
+        )
+
+    # 9) bear_mid
+    if dom == "short" and sc["mid_score"] <= score_s < sc["strong_score"]:
+        return MomentumScenarioView(
+            scenario="bear_mid",
+            label="空头中等",
+            text="🔴 空头中等 · 等反弹或事件确认",
+            risk="mid",
+            evidence=base_evidence,
+            action="小仓试探 · 等反弹",
+        )
+
+    # 10) neutral fallback
+    return MomentumScenarioView(
+        scenario="neutral",
+        label="中性",
+        text="⚪ 多空都弱 · 无明显信号",
+        risk="low",
+        evidence=base_evidence,
+        action="观望 · 等机会",
+    )
+
+
 __all__ = [
     "BandView",
     "ChochLatestView",
@@ -2309,6 +2568,7 @@ __all__ = [
     "FeatureExtractor",
     "FeatureSnapshot",
     "MomentumPulseView",
+    "MomentumScenarioView",
     "OverrideEvent",
     "SegmentPortrait",
     "TargetItem",

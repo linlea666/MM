@@ -32,8 +32,13 @@ from backend.models import (
 from backend.rules.features import (
     BandView,
     ChochLatestView,
+    MomentumPulseView,
+    OverrideEvent,
     SegmentPortrait,
+    TargetItem,
+    TargetProjectionView,
     _derive_momentum_pulse,
+    _derive_momentum_scenario,
     _derive_target_projection,
 )
 
@@ -472,3 +477,243 @@ def test_target_projection_per_side_topn_caps_list():
     # 应保留最近的 5 个（100.5 / 101.0 / 101.5 / 102.0 / 102.5）
     distances = [it.distance_pct for it in view.above]
     assert distances == sorted(distances)
+
+
+# ═══════════════════════════════════════════════════════════════
+# MomentumScenario（V1.1 · Step 7.5）
+# ═══════════════════════════════════════════════════════════════
+
+from backend.rules.features import ContribItem
+
+
+def _mp(
+    *,
+    long: int = 0, short: int = 0,
+    dom: str = "neutral",
+    fatigue: str = "fresh",
+    override: OverrideEvent | None = None,
+    contributions: list[ContribItem] | None = None,
+) -> MomentumPulseView:
+    """构造一个 MomentumPulseView。"""
+    return MomentumPulseView(
+        score_long=long, score_short=short,
+        dominant_side=dom,  # type: ignore[arg-type]
+        streak_bars=0, streak_side="none",
+        fatigue_state=fatigue,  # type: ignore[arg-type]
+        fatigue_decay={"fresh": 0.0, "mid": 0.2, "exhausted": 0.5}[fatigue],
+        override=override,
+        contributions=contributions or [],
+        note="test",
+    )
+
+
+def _tp(
+    *,
+    above: list[TargetItem] | None = None,
+    below: list[TargetItem] | None = None,
+) -> TargetProjectionView:
+    return TargetProjectionView(
+        above=above or [], below=below or [],
+        max_distance_pct=0.08,
+    )
+
+
+def _ti(
+    *, side: str, price: float, distance_pct: float, confidence: float,
+) -> TargetItem:
+    return TargetItem(
+        kind="roi",  # type: ignore[arg-type]
+        side=side,  # type: ignore[arg-type]
+        tier="T1",
+        price=price, distance_pct=distance_pct,
+        confidence=confidence, bars_to_arrive=2,
+        evidence="test",
+    )
+
+
+def test_scenario_returns_none_when_no_pulse():
+    assert _derive_momentum_scenario(cfg={}, momentum_pulse=None, target_projection=None) is None
+
+
+def test_scenario_fake_breakout_when_pierce_two_sided():
+    """pierce 双向震荡 hint 优先匹配为 fake_breakout。"""
+    pulse = _mp(
+        long=10, short=20, dom="short", fatigue="fresh",
+        contributions=[
+            ContribItem(label="pierce", value="atr_ratio=0.87 双向震荡（不计入 score）",
+                        delta=0, side="both"),
+        ],
+    )
+    sc = _derive_momentum_scenario(cfg={}, momentum_pulse=pulse, target_projection=None)
+    assert sc is not None
+    assert sc.scenario == "fake_breakout"
+    assert sc.risk == "mid"
+    assert "假突破" in sc.text
+
+
+def test_scenario_top_reversal_when_long_meets_bear_sweep():
+    """多头主导 + 反向 Sweep → top_reversal（high）。"""
+    pulse = _mp(
+        long=70, short=10, dom="long", fatigue="mid",
+        override=OverrideEvent(
+            kind="Sweep", direction="bearish", bars_since=1,
+            detail="⚡ Sweep↓ 破 100,000 · 1 根前",
+        ),
+    )
+    sc = _derive_momentum_scenario(cfg={}, momentum_pulse=pulse, target_projection=None)
+    assert sc is not None
+    assert sc.scenario == "top_reversal"
+    assert sc.risk == "high"
+    assert "顶部反转" in sc.text
+
+
+def test_scenario_bottom_reversal_when_short_meets_bull_choch():
+    pulse = _mp(
+        long=10, short=70, dom="short", fatigue="fresh",
+        override=OverrideEvent(
+            kind="CHoCH", direction="bullish", bars_since=1,
+            detail="⚡ CHoCH↑ 破 100,000 · 1 根前",
+        ),
+    )
+    sc = _derive_momentum_scenario(cfg={}, momentum_pulse=pulse, target_projection=None)
+    assert sc is not None
+    assert sc.scenario == "bottom_reversal"
+    assert sc.risk == "mid"
+
+
+def test_scenario_bull_late_when_exhausted_and_target_close():
+    """多头主导 + exhausted + 价撞 ⭐⭐⭐⭐+ 上方目标。"""
+    pulse = _mp(long=65, short=10, dom="long", fatigue="exhausted")
+    targets = _tp(above=[
+        _ti(side="above", price=100.3, distance_pct=0.003, confidence=0.85),
+    ])
+    sc = _derive_momentum_scenario(cfg={}, momentum_pulse=pulse, target_projection=targets)
+    assert sc is not None
+    assert sc.scenario == "bull_late"
+    assert sc.risk == "high"
+    assert "末段" in sc.text
+
+
+def test_scenario_bear_late_mirror():
+    pulse = _mp(long=10, short=65, dom="short", fatigue="exhausted")
+    targets = _tp(below=[
+        _ti(side="below", price=99.7, distance_pct=-0.003, confidence=0.85),
+    ])
+    sc = _derive_momentum_scenario(cfg={}, momentum_pulse=pulse, target_projection=targets)
+    assert sc is not None
+    assert sc.scenario == "bear_late"
+
+
+def test_scenario_late_skips_when_target_far():
+    """exhausted 但目标距离远（>0.5%）→ 不算 late，降级到 strong/mid。"""
+    pulse = _mp(long=65, short=10, dom="long", fatigue="exhausted")
+    targets = _tp(above=[
+        _ti(side="above", price=103.0, distance_pct=0.03, confidence=0.85),
+    ])
+    sc = _derive_momentum_scenario(cfg={}, momentum_pulse=pulse, target_projection=targets)
+    assert sc is not None
+    # exhausted 排除 strong（要求 fresh/mid），匹配 mid 前先看 mid_score
+    # score_long=65 ≥ strong_score=60 但 fatigue=exhausted → strong 不命中；mid 也要求 30~60，
+    # 65 不在区间 → fallback neutral
+    assert sc.scenario == "neutral"
+
+
+def test_scenario_bull_strong_when_score_high_and_fresh():
+    pulse = _mp(long=70, short=10, dom="long", fatigue="fresh")
+    sc = _derive_momentum_scenario(cfg={}, momentum_pulse=pulse, target_projection=None)
+    assert sc is not None
+    assert sc.scenario == "bull_strong"
+    assert sc.risk == "low"
+    assert "强势" in sc.text
+
+
+def test_scenario_bear_strong_when_short_high_and_mid_fatigue():
+    pulse = _mp(long=10, short=75, dom="short", fatigue="mid")
+    sc = _derive_momentum_scenario(cfg={}, momentum_pulse=pulse, target_projection=None)
+    assert sc is not None
+    assert sc.scenario == "bear_strong"
+
+
+def test_scenario_bull_mid_for_medium_score():
+    pulse = _mp(long=40, short=10, dom="long", fatigue="fresh")
+    sc = _derive_momentum_scenario(cfg={}, momentum_pulse=pulse, target_projection=None)
+    assert sc is not None
+    assert sc.scenario == "bull_mid"
+    assert sc.risk == "mid"
+
+
+def test_scenario_bear_mid_for_medium_score():
+    pulse = _mp(long=10, short=40, dom="short", fatigue="fresh")
+    sc = _derive_momentum_scenario(cfg={}, momentum_pulse=pulse, target_projection=None)
+    assert sc is not None
+    assert sc.scenario == "bear_mid"
+
+
+def test_scenario_neutral_when_dom_neutral():
+    pulse = _mp(long=15, short=10, dom="neutral", fatigue="fresh")
+    sc = _derive_momentum_scenario(cfg={}, momentum_pulse=pulse, target_projection=None)
+    assert sc is not None
+    assert sc.scenario == "neutral"
+    assert sc.risk == "low"
+
+
+def test_scenario_priority_fake_beats_reversal():
+    """同时存在 pierce 双向震荡 + 反向 Sweep → fake_breakout 先匹配（最高优先级）。"""
+    pulse = _mp(
+        long=70, short=10, dom="long", fatigue="fresh",
+        override=OverrideEvent(
+            kind="Sweep", direction="bearish", bars_since=1, detail="⚡ Sweep↓ test",
+        ),
+        contributions=[
+            ContribItem(label="pierce", value="双向震荡", delta=0, side="both"),
+        ],
+    )
+    sc = _derive_momentum_scenario(cfg={}, momentum_pulse=pulse, target_projection=None)
+    assert sc is not None
+    assert sc.scenario == "fake_breakout"
+
+
+def test_scenario_priority_reversal_beats_late():
+    """同时 exhausted + 价撞目标 + 反向 Sweep → top_reversal 先（更紧迫）。"""
+    pulse = _mp(
+        long=70, short=10, dom="long", fatigue="exhausted",
+        override=OverrideEvent(
+            kind="Sweep", direction="bearish", bars_since=1, detail="⚡ Sweep↓ test",
+        ),
+    )
+    targets = _tp(above=[
+        _ti(side="above", price=100.3, distance_pct=0.003, confidence=0.85),
+    ])
+    sc = _derive_momentum_scenario(cfg={}, momentum_pulse=pulse, target_projection=targets)
+    assert sc is not None
+    assert sc.scenario == "top_reversal"
+
+
+def test_scenario_evidence_includes_score_and_fatigue():
+    """证据链至少包含 score 和 fatigue 描述。"""
+    pulse = _mp(long=70, short=10, dom="long", fatigue="fresh")
+    sc = _derive_momentum_scenario(cfg={}, momentum_pulse=pulse, target_projection=None)
+    assert sc is not None
+    assert any("多 70" in e or "空 10" in e for e in sc.evidence)
+    assert any("新鲜" in e for e in sc.evidence)
+
+
+def test_scenario_action_non_empty_for_each_branch():
+    """每条分支必须给出 action 文案。"""
+    cases = [
+        _mp(long=10, short=20, dom="short",
+            contributions=[ContribItem(label="pierce", value="t", delta=0, side="both")]),
+        _mp(long=70, short=10, dom="long", fatigue="fresh",
+            override=OverrideEvent(kind="Sweep", direction="bearish", bars_since=1, detail="t")),
+        _mp(long=10, short=70, dom="short", fatigue="fresh",
+            override=OverrideEvent(kind="CHoCH", direction="bullish", bars_since=1, detail="t")),
+        _mp(long=70, short=10, dom="long", fatigue="fresh"),
+        _mp(long=10, short=70, dom="short", fatigue="fresh"),
+        _mp(long=40, short=10, dom="long", fatigue="fresh"),
+        _mp(long=10, short=40, dom="short", fatigue="fresh"),
+        _mp(long=10, short=10, dom="neutral", fatigue="fresh"),
+    ]
+    for pulse in cases:
+        sc = _derive_momentum_scenario(cfg={}, momentum_pulse=pulse, target_projection=None)
+        assert sc is not None
+        assert sc.action.strip() != ""

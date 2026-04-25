@@ -407,6 +407,15 @@ target_projection:
     vacuum: 0.50
     nearest_level: 0.60
 
+# Step 7.5：场景识别（白话总结）。匹配优先级 fake > reversal > late > strong > mid > neutral。
+# 详见 docs/dashboard-v1/MOMENTUM-PLAYBOOK.md §5。
+momentum_scenario:
+  thresholds:
+    strong_score: 60                    # score_dominant ≥ 此值且 fresh/mid → bull/bear_strong
+    mid_score: 30                       # 30 ≤ score_dominant < 60 → bull/bear_mid
+    late_target_confidence: 0.7         # late 触发：上方/下方目标 confidence ≥ 此值
+    late_target_max_distance_pct: 0.005 # late 触发：距离已 ≤ 0.5%（撞到目标）
+
 # ════════════════════════════════════════════════════════════════════
 # UI 偏好（前端 /settings 可改，不影响后端行为）
 # ════════════════════════════════════════════════════════════════════

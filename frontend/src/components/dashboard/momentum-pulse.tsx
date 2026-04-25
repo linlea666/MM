@@ -7,6 +7,8 @@ import type {
   MomentumPulseCard,
   MomentumOverrideEvent,
   MomentumPulseMultiItem,
+  MomentumScenarioCard,
+  MomentumScenarioRisk,
   MomentumSide,
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -56,11 +58,13 @@ interface Props {
   tf: string;
   /** 当前 K 线 anchor_ts（ms）；用于倒计时 + 半实时 freshness chip */
   anchorTs: number | null;
+  /** Step 7.5：场景识别白话卡（后端规则化匹配） */
+  scenario?: MomentumScenarioCard | null;
 }
 
 const TF_LIST = ["30m", "1h", "4h"] as const;
 
-export function MomentumPulseCardView({ card, tf, anchorTs }: Props) {
+export function MomentumPulseCardView({ card, tf, anchorTs, scenario }: Props) {
   const symbol = useSymbolStore((s) => s.symbol);
   const multi = useMomentumPulseMulti(symbol, TF_LIST);
   const [showContribs, setShowContribs] = useState(false);
@@ -99,6 +103,9 @@ export function MomentumPulseCardView({ card, tf, anchorTs }: Props) {
         mainCardSide={dominant}
         anchorTs={anchorTs}
       />
+
+      {/* Step 7.5 · 场景识别白话条（最顶部，最显眼） */}
+      {scenario && <ScenarioBanner scenario={scenario} />}
 
       {/* 白话结论条（小白看这一行就够） */}
       <MomentumVerdict
@@ -507,6 +514,71 @@ function OverrideStrip({ override }: { override: MomentumOverrideEvent }) {
       <div className="mt-0.5 text-[10px] text-foreground/65">
         ⚡ 这是「{dirLabel}事件」（瞬时） · 不等于动能方向（看上面双柱）
       </div>
+    </div>
+  );
+}
+
+// ─── Step 7.5 · 场景识别白话条（自动识别当前信号 + 一句话操作建议） ─────────────
+
+/**
+ * 后端规则识别的场景标签：把动能 + 目标 + 事件浓缩成一句白话 + 风险等级 + 操作建议。
+ *
+ * 显示在 Card A 最顶部，相当于「老司机看完整张卡之后给的一句结论」。
+ *
+ * 12 类场景与触发表见 `docs/dashboard-v1/MOMENTUM-PLAYBOOK.md` §5。
+ */
+function ScenarioBanner({ scenario }: { scenario: MomentumScenarioCard }) {
+  const tone: Record<MomentumScenarioRisk, { wrap: string; pill: string; pillText: string }> = {
+    high: {
+      wrap: "border-neon-magenta/45 bg-[hsl(var(--neon-magenta)/0.10)]",
+      pill: "bg-neon-magenta text-background",
+      pillText: "高风险",
+    },
+    mid: {
+      wrap: "border-neon-amber/45 bg-[hsl(var(--neon-amber)/0.10)]",
+      pill: "bg-neon-amber text-background",
+      pillText: "中等",
+    },
+    low: {
+      wrap: "border-neon-cyan/40 bg-[hsl(var(--neon-cyan)/0.08)]",
+      pill: "bg-neon-cyan text-background",
+      pillText: "低风险",
+    },
+  };
+  const t = tone[scenario.risk];
+  return (
+    <div className={cn("mt-3 rounded border px-3 py-2", t.wrap)}>
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-semibold text-foreground">
+            {scenario.text}
+          </div>
+          {scenario.action && (
+            <div className="mt-0.5 text-[11px] text-foreground/75">
+              建议：{scenario.action}
+            </div>
+          )}
+        </div>
+        <span
+          className={cn(
+            "shrink-0 rounded-full px-2 py-[2px] text-[10px] font-bold uppercase tracking-wider",
+            t.pill,
+          )}
+          title="风险等级（规则化匹配，详见 MOMENTUM-PLAYBOOK §5）"
+        >
+          {t.pillText}
+        </span>
+      </div>
+      {scenario.evidence.length > 0 && (
+        <div className="mt-1.5 flex flex-wrap gap-x-2 gap-y-0.5 text-[10px] text-foreground/60">
+          {scenario.evidence.map((e, i) => (
+            <span key={i} className="inline-flex items-center gap-1">
+              {i > 0 && <span className="text-foreground/30">·</span>}
+              {e}
+            </span>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
