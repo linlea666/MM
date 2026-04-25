@@ -224,19 +224,10 @@ class RuleRunner:
                 detail={"symbol": symbol, "tf": tf},
             )
         dashboard = self._assemble(snap)
-        # 非阻塞地触发 AI 观察（observer 内部有节流/冷却/disabled 判断，不会连发）
-        if self._ai_observer is not None:
-            try:
-                await self._ai_observer.run_async(snap, trigger="scheduled")
-                # 附带最新一条 summary（可能是上一根 K 线的）到 snapshot
-                summary = await self._ai_observer.latest_summary(snap)
-                if summary is not None:
-                    dashboard = dashboard.model_copy(update={"ai": summary})
-            except Exception as e:  # noqa: BLE001 - 观察层绝不允许污染主路径
-                logger.debug(
-                    f"ai observer non-fatal: {e}",
-                    extra={"tags": ["AI"], "context": {"symbol": symbol, "tf": tf}},
-                )
+        # AI 观察 V1.1（3 层 agent）已在 dashboard UI 移除并不再被前端消费；
+        # 后端保留 ``/api/ai/observations/run`` 手动 API 入口（供历史排查），
+        # 但流水线不再自动调度，避免持续刷 schema 验证失败 / 浪费 token。
+        # 如需恢复，去掉下方 short-circuit 即可。
         return dashboard
 
     def _assemble(self, snap: FeatureSnapshot) -> DashboardSnapshot:

@@ -99,10 +99,17 @@ def _onepass_to_markdown(out: OnePassReport) -> str:
     return "\n".join(lines).strip()
 
 
-_PRICE_RE = re.compile(r"`?([0-9]{2,3}(?:,[0-9]{3})+(?:\.[0-9]+)?|[0-9]{4,6}(?:\.[0-9]+)?)`?")
+# 价位提取：前后必须不是数字/小数点，避免把 13 位时间戳 "1777014000000" 的子串
+# "177701" 误识别成价位（之前在线上漏出 `177,701` 的误报）。
+_PRICE_RE = re.compile(
+    r"(?<![0-9.])"
+    r"`?([0-9]{2,3}(?:,[0-9]{3})+(?:\.[0-9]+)?|[0-9]{4,6}(?:\.[0-9]+)?)`?"
+    r"(?![0-9.])"
+)
 
 # `78,759`（trailing_vwap_last.resistance）/ 78,759 (source=...) / 78,759（cascade_bands long_fuel）
 _PRICED_SOURCE_RE = re.compile(
+    r"(?<![0-9.])"
     r"`?([0-9]{2,3}(?:,[0-9]{3})+(?:\.[0-9]+)?|[0-9]{4,6}(?:\.[0-9]+)?)`?"
     r"\s*[（(]\s*"
     r"(?:source\s*[:=]\s*)?"
@@ -320,6 +327,88 @@ def _is_price_traced(v: float, candidates: set[float]) -> bool:
     return False
 
 
+_NO_TRADE_RE = re.compile(
+    r"primary[_\s\-]?action\s*[:：][^\n]{0,40}?no[_\s\-]?trade",
+    re.IGNORECASE,
+)
+_NO_TRADE_SCRUB_SECTIONS: tuple[str, ...] = ("风险与场景", "操作矩阵")
+# 价位前的执行级关键词（中英文兼容），用于剥离 no_trade 模式下的具体数字
+_PRICE_NEAR_KEYWORD_RE = re.compile(
+    r"(止损|入场(?:区间|价)?|止盈|目标|stop[_\s\-]?loss|entry(?:[_\s\-]zone)?|take[_\s\-]?profit|TP\d*)"
+    r"\s*[:：]?\s*"
+    r"(?<![0-9.])"
+    r"`?[0-9]{2,3}(?:,[0-9]{3})+(?:\.[0-9]+)?`?"
+    r"(?![0-9.])",
+    re.IGNORECASE,
+)
+_PRICE_NEAR_KEYWORD_RE_PLAIN = re.compile(
+    r"(止损|入场(?:区间|价)?|止盈|目标|stop[_\s\-]?loss|entry(?:[_\s\-]zone)?|take[_\s\-]?profit|TP\d*)"
+    r"\s*[:：]?\s*"
+    r"(?<![0-9.])"
+    r"`?[0-9]{4,6}(?:\.[0-9]+)?`?"
+    r"(?![0-9.])",
+    re.IGNORECASE,
+)
+
+
+def _scrub_specific_prices(section_text: str) -> tuple[str, int]:
+    """把段落里"止损 X / 入场 Y / 目标 Z"形式的执行级具体价位替换为占位符。
+
+    返回 ``(新文本, 替换数)``。两次替换分别处理千分位 + 纯整数两种格式。
+    """
+    placeholder = lambda m: f"{m.group(1)} <待场景成立后再定>"  # noqa: E731
+    s1, n1 = _PRICE_NEAR_KEYWORD_RE.subn(placeholder, section_text)
+    s2, n2 = _PRICE_NEAR_KEYWORD_RE_PLAIN.subn(placeholder, s1)
+    return s2, n1 + n2
+
+
+def _strip_no_trade_specifics(out: OnePassReport) -> tuple[OnePassReport, list[str]]:
+    """当 ``primary_action=no_trade`` 时，强制剥离「风险与场景 / 操作矩阵」章节里
+    的执行级具体止损 / 入场 / 目标价。
+
+    设计取舍：
+    - 仅 scrub 上述两个章节；「决策摘要」里的 ``invalidation`` / ``switch_trigger``
+      允许保留条件触发价（这是反手必备的硬条件）；
+    - 「价位来源审计」章节（自动追加在末尾）也不动；
+    - 命中即在末尾追加「## 不交易护栏」简要说明，让用户知道发生了什么。
+    """
+    text = out.report_md or ""
+    if not text or not _NO_TRADE_RE.search(text):
+        return out, []
+
+    headers = list(re.finditer(r"(?m)^##\s+(.+)$", text))
+    if not headers:
+        return out, []
+
+    pieces: list[str] = [text[: headers[0].start()]]
+    scrubbed_titles: list[str] = []
+    for idx, h in enumerate(headers):
+        title = h.group(1).strip()
+        sect_start = h.start()
+        sect_end = headers[idx + 1].start() if idx + 1 < len(headers) else len(text)
+        section_text = text[sect_start:sect_end]
+        if any(name in title for name in _NO_TRADE_SCRUB_SECTIONS):
+            new_section, n_changes = _scrub_specific_prices(section_text)
+            if n_changes > 0:
+                scrubbed_titles.append(title)
+                pieces.append(new_section)
+                continue
+        pieces.append(section_text)
+
+    new_md = "".join(pieces)
+    if not scrubbed_titles or new_md == text:
+        return out, []
+
+    guard_note = (
+        "\n\n## 不交易护栏\n"
+        f"- ⚠️ `primary_action=no_trade` 模式下，已自动从「{' / '.join(scrubbed_titles)}」"
+        "章节剥离场景级具体止损/入场/目标价（保留方向与条件描述）。\n"
+        "- 如需进入持仓，请等待 `## 决策摘要 → switch_trigger` 的硬条件成立后再定具体价位。"
+    )
+    out.report_md = new_md.rstrip() + guard_note
+    return out, scrubbed_titles
+
+
 def _audit_report_price_sources(
     out: OnePassReport, *, snapshot_json: str
 ) -> tuple[OnePassReport, int, list[float]]:
@@ -462,6 +551,22 @@ class OnePassAnalyzer:
             out, unknown_price_count, unknown_price_samples = _audit_report_price_sources(
                 out, snapshot_json=snap_json
             )
+            # no_trade 模式：从场景章节剥离执行级具体价（Prompt 仅是建议，模型不一定遵守，
+            # 这里做硬保障 —— 与 Prompt v3.1 协同生效）
+            out, scrubbed_titles = _strip_no_trade_specifics(out)
+            if scrubbed_titles:
+                logger.warning(
+                    "OnePass no_trade 模式剥离场景级具体价",
+                    extra={
+                        "tags": ["AI", "DATA_AUDIT"],
+                        "context": {
+                            "symbol": snap.symbol,
+                            "tf": snap.tf,
+                            "report_id": report_id,
+                            "scrubbed_sections": scrubbed_titles,
+                        },
+                    },
+                )
             status = "ok"
             error_reason = None
             one_line = out.one_line

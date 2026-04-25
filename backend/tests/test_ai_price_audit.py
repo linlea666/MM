@@ -3,6 +3,7 @@ from backend.ai.analyzer import (
     _collect_source_prices_by_field,
     _is_price_traced,
     _resolve_source_prices,
+    _strip_no_trade_specifics,
 )
 from backend.ai.schemas import OnePassReport
 
@@ -145,3 +146,91 @@ def test_is_price_traced_round_thousand_strict() -> None:
     cands = {77850.7}
     assert _is_price_traced(78000.0, cands) is False
     assert _is_price_traced(77850.0, cands) is True
+
+
+def test_price_audit_does_not_match_timestamp_substring() -> None:
+    """13 位时间戳 ``1777014000000`` 子串 ``177701`` 不应被审计误识别成价位。
+
+    线上回归：Prompt v3.1 的报告里写 "start_time 1777014000000"，
+    旧正则贪婪吃了 6 位整数 ``177701``，再被 ``last_price × [0.35, 3.5]``
+    价格域过滤通过 → 误报「不可追溯价位 177,701」。
+    """
+    out = _base_report()
+    out.report_md += (
+        "\n当前吸筹段（start_time 1777014000000）均价 `77,425`，"
+        "中位止盈 `81,069`，极限痛点 `74,328`。"
+        "\n时间预算：22 根 K 线（约 22h），极限 81 根（约 81h）。"
+    )
+    snap_json = (
+        '{"last_price":77624.0,'
+        '"trailing_vwap_last":{"support":77465.95,"resistance":78759.61},'
+        '"smart_money_ongoing":{"avg_price":77424.81666666667},'
+        '"segment_portrait":{"roi_avg_price":77424.82,"roi_limit_avg_price":81068.87,'
+        '"roi_limit_max_price":84197.50,"pain_avg_price":75873.81,'
+        '"pain_max_price":74328.15}}'
+    )
+    audited, cnt, samples = _audit_report_price_sources(out, snapshot_json=snap_json)
+    assert 177701.0 not in samples, f"时间戳子串误报: samples={samples}"
+    # 23 ≈ 22 / 81 这种小整数（< 1000）不在 _PRICE_RE 字符域内，也不应误命中
+    assert all(p >= 1000 for p in samples)
+    assert cnt == 0
+
+
+def test_strip_no_trade_specifics_drops_scenario_prices() -> None:
+    """primary_action=no_trade 时，「风险与场景 / 操作矩阵」里的执行级具体价应被剥离。"""
+    out = OnePassReport(
+        one_line="数据缺失，建议观望。",
+        overall_bias="neutral",
+        confidence=0.31,
+        key_takeaways=["关键原子表全 0，confidence 已降。"],
+        key_risks=[],
+        next_focus=[],
+        report_md=(
+            "## 风险与场景\n"
+            "- 若价格跌破 `77,466`（trailing_vwap.support）：可考虑轻仓短空，"
+            "止损 `78,000`。\n"
+            "- 若价格突破 `78,760`：转为偏多，目标 `79,297`，止损 `77,400`。\n\n"
+            "## 操作矩阵\n"
+            "- 做多：entry_zone `78,800` / 止损 `77,400` / TP1 `80,000`\n\n"
+            "## 决策摘要\n"
+            "- primary_action: no_trade\n"
+            "- switch_trigger: 若价格跌破 `77,466` 且 CVD 收敛比 < 0.3，则切换为 short。\n"
+        ),
+    )
+    audited, scrubbed = _strip_no_trade_specifics(out)
+    assert scrubbed, "no_trade 应触发剥离"
+    md = audited.report_md
+    # 场景章节里的执行级具体价已被替换
+    assert "止损 `78,000`" not in md
+    assert "止损 `77,400`" not in md
+    assert "TP1 `80,000`" not in md
+    assert "<待场景成立后再定>" in md
+    # 决策摘要中的 switch_trigger 条件价**保留**（这是反手必备的硬条件）
+    assert "switch_trigger" in md
+    assert "`77,466`" in md  # 该价位在多个章节都出现，至少在决策摘要保留
+    # 末尾追加护栏说明
+    assert "## 不交易护栏" in md
+
+
+def test_strip_no_trade_specifics_noop_when_action_is_long_or_short() -> None:
+    """非 no_trade 时不应做任何剥离。"""
+    out = OnePassReport(
+        one_line="偏多入场。",
+        overall_bias="bullish",
+        confidence=0.6,
+        key_takeaways=["趋势强，主力吸筹延续。"],
+        key_risks=[],
+        next_focus=[],
+        report_md=(
+            "## 风险与场景\n"
+            "- 突破 `78,760` 后做多，止损 `77,400`，目标 `79,297`。\n\n"
+            "## 决策摘要\n"
+            "- primary_action: long\n"
+            "- switch_trigger: 跌破 `77,466` 切换 short。\n"
+        ),
+    )
+    audited, scrubbed = _strip_no_trade_specifics(out)
+    assert not scrubbed
+    assert "止损 `77,400`" in audited.report_md
+    assert "<待场景成立后再定>" not in audited.report_md
+    assert "## 不交易护栏" not in audited.report_md

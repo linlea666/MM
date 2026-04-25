@@ -2519,21 +2519,58 @@ function deriveHealthFindings(snap: SnapAccess): HealthFinding[] {
     "atoms_retail_stop_band",
     "atoms_volume_profile",
     "atoms_power_imbalance",
+    "atoms_trend_exhaustion",
   ]);
-  const staleKey = stale.filter((s) => KEY_TABLES.has(s));
-  if (staleKey.length > 0) {
+  // 区分两种 stale 来源：
+  // (A) 真缺失：HFD 没拉到 / parser 失败，atom 表整体没有近期记录；
+  // (B) 全 0 失效：HFD 拉到了但最近 N 条全 0，等价于无效信号
+  //     （后端 features.py 在 power_imbalance/trend_exhaustion 全 0 时主动加入 stale_tables）。
+  // 文案区分能让交易员判断：是采集出问题，还是市场就是这样平静。
+  const isAllZero = (rows: Record<string, unknown>[], keys: string[]): boolean => {
+    if (!rows.length) return false;
+    return rows.every((r) =>
+      keys.every((k) => {
+        const v = Number(r[k] ?? 0);
+        return Number.isFinite(v) && Math.abs(v) < 1e-9;
+      }),
+    );
+  };
+  const piRecent = snap.list<Record<string, unknown>>("power_imbalance_recent");
+  const teRecent = snap.list<Record<string, unknown>>("trend_exhaustion_recent");
+  const piAllZero = isAllZero(piRecent, ["buy_vol", "sell_vol", "ratio"]);
+  const teAllZero = isAllZero(teRecent, ["exhaustion"]);
+  const zeroStale: string[] = [];
+  const missingStale: string[] = [];
+  for (const t of stale) {
+    if (t === "atoms_power_imbalance" && piAllZero) zeroStale.push(t);
+    else if (t === "atoms_trend_exhaustion" && teAllZero) zeroStale.push(t);
+    else missingStale.push(t);
+  }
+  const missingKey = missingStale.filter((s) => KEY_TABLES.has(s));
+  const zeroKey = zeroStale.filter((s) => KEY_TABLES.has(s));
+  if (missingKey.length > 0) {
     findings.push({
       severity: "fail",
       label: "关键原子表缺失",
-      detail: staleKey.join(" / "),
+      detail: missingKey.join(" / "),
     });
-  } else if (stale.length > 0) {
+  }
+  if (zeroKey.length > 0) {
     findings.push({
       severity: "warn",
-      label: `${stale.length} 张原子表无数据`,
-      detail: stale.slice(0, 3).join(" / ") + (stale.length > 3 ? " 等" : ""),
+      label: "关键原子表数据失效（最近全 0）",
+      detail: zeroKey.join(" / ") + " · 已采集但近期序列为 0，等价于无信号",
     });
-  } else {
+  }
+  const otherStale = [...missingStale, ...zeroStale].filter((s) => !KEY_TABLES.has(s));
+  if (otherStale.length > 0) {
+    findings.push({
+      severity: "warn",
+      label: `${otherStale.length} 张原子表无数据`,
+      detail: otherStale.slice(0, 3).join(" / ") + (otherStale.length > 3 ? " 等" : ""),
+    });
+  }
+  if (missingKey.length === 0 && zeroKey.length === 0 && otherStale.length === 0) {
     findings.push({ severity: "ok", label: "原子表新鲜度", detail: "全部在线" });
   }
 
